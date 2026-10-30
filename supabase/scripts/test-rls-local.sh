@@ -4,22 +4,24 @@
 #   RLS_TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres pnpm test:rls
 #
 # The URL is only used to connect and create/drop a uniquely named test
-# database. It refuses any server that isn't on loopback or a local socket,
-# so it can't touch staging or prod.
+# database. It must name localhost or a loopback address, so it can't touch
+# staging or prod. (Postgres in Docker or a CI service container is fine:
+# the URL still says localhost even though the server sees another address.)
 set -euo pipefail
 
 : "${RLS_TEST_DATABASE_URL:?Set RLS_TEST_DATABASE_URL to a local Postgres URL (see .env.example)}"
 
-# Ask the server itself where it is, rather than trusting the URL text.
-# Query parameters (e.g. ?host=) can redirect libpq, so reject them outright.
-case "$RLS_TEST_DATABASE_URL" in
-  *\?*) echo "Refusing to run: RLS_TEST_DATABASE_URL must not contain query parameters." >&2; exit 1 ;;
-esac
-server_addr="$(psql -XAtq "$RLS_TEST_DATABASE_URL" -c "select coalesce(host(inet_server_addr()), 'socket')")"
-case "$server_addr" in
-  socket|127.0.0.1|::1) ;;
-  *) echo "Refusing to run: server address is $server_addr, not localhost." >&2; exit 1 ;;
-esac
+# Strict shape: user[:password]@host[:port]/dbname, nothing else. No query
+# parameters (?host= can redirect libpq) and no extra @ or / that could make
+# the host ambiguous.
+loopback='^postgres(ql)?://[^@/?#]+@(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?/[A-Za-z0-9_]+$'
+if [[ ! "$RLS_TEST_DATABASE_URL" =~ $loopback ]]; then
+  echo "Refusing to run: RLS_TEST_DATABASE_URL must look like postgres://user[:pass]@localhost[:port]/dbname" >&2
+  exit 1
+fi
+
+# Environment variables like PGHOSTADDR or PGSERVICE could send libpq elsewhere.
+unset PGHOST PGHOSTADDR PGSERVICE PGSERVICEFILE PGSYSCONFDIR
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 db="rls_test_$(date +%s)_$$"
