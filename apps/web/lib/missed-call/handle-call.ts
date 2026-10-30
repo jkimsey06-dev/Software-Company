@@ -1,4 +1,4 @@
-import { canSendTexts, phoneE164 } from "@sc/shared";
+import { canSendTexts, phoneE164, type TenantConfig } from "@sc/shared";
 import { MISSED_CALL_TEXTBACK_V1, renderMissedCallTextbackV1 } from "@sc/ai";
 import twilio from "twilio";
 import {
@@ -8,6 +8,8 @@ import {
   type MissedCallStore,
   type SmsSender,
 } from "./types";
+
+import type { TextbackOutcome } from "../notifications/templates";
 
 const { VoiceResponse } = twilio.twiml;
 
@@ -25,7 +27,19 @@ export interface CallDeps {
   sender: SmsSender;
   publicBaseUrl: string;
   log: Logger;
+  // Tells the tenant's owner about a missed-call lead. Must not throw.
+  notifyOwner?: OwnerNotifier;
 }
+
+export type OwnerNotifier = (lead: {
+  tenantId: string;
+  config: TenantConfig;
+  leadId: string;
+  callerPhone: string;
+  calledAt: Date;
+  textback: TextbackOutcome;
+  messageId?: string;
+}) => Promise<void>;
 
 export interface InboundCall {
   callSid: string;
@@ -139,15 +153,68 @@ export async function handleDialStatus(
   await store.linkCallToLead(tenantId, call.callSid, leadId);
   log("missed_call.lead_saved", { ...ctx, leadId });
 
-  const skip = (reason: string) => {
-    log("textback.skipped", { ...ctx, reason });
-    return hangup();
+  const notify = (textback: TextbackOutcome, messageId?: string) => {
+    // A tenant calling its own number isn't a lead worth an email.
+    if (textback.kind === "skipped" && textback.reason === "caller_is_tenant") return;
+    // Queues work for after the response; never blocks or throws.
+    void deps.notifyOwner?.({
+      tenantId,
+      config,
+      leadId,
+      callerPhone: fromPhone,
+      calledAt: new Date(),
+      textback,
+      messageId,
+    });
   };
-  if (!recognized) return skip("unrecognized_status");
+
+  let textback: Awaited<ReturnType<typeof textBack>>;
+  try {
+    textback = await textBack(
+      { tenantId, config, callSid: call.callSid, leadId, callerPhone: fromPhone, businessNumber: call.to, recognized },
+      deps,
+    );
+  } catch (err) {
+    // The lead is saved but we can't say whether a text went out. The owner
+    // still hears about the lead before the error goes up to the route.
+    notify({ kind: "unknown" });
+    throw err;
+  }
+  // The owner hears about every new lead, whatever happened to the text-back.
+  notify(textback.outcome, textback.messageId);
+
+  if (textback.outcome.kind !== "sent") return hangup();
+  const response = new VoiceResponse();
+  response.say("Sorry we missed your call. We'll text you in just a moment.");
+  response.hangup();
+  return response.toString();
+}
+
+async function textBack(
+  ctx: {
+    tenantId: string;
+    config: TenantConfig;
+    callSid: string;
+    leadId: string;
+    callerPhone: string;
+    businessNumber: string;
+    recognized: boolean;
+  },
+  deps: CallDeps,
+): Promise<{ outcome: TextbackOutcome; messageId?: string }> {
+  const { store, log } = deps;
+  const { tenantId, config, leadId, callerPhone: fromPhone } = ctx;
+  const logCtx = { tenantId, callSid: ctx.callSid };
+  const skip = (reason: string) => {
+    log("textback.skipped", { ...logCtx, reason });
+    return { outcome: { kind: "skipped" as const, reason } };
+  };
+
+  if (!ctx.recognized) return skip("unrecognized_status");
   if (!canSendTexts(config)) return skip("a2p_not_approved");
   // canSendTexts guarantees fromNumber is set.
   const sendFrom = config.messaging.fromNumber as string;
-  const ownNumbers = [call.to, sendFrom, config.calls.forwardToNumber];
+  const ownNumbers = [ctx.businessNumber, sendFrom, config.calls.forwardToNumber];
   if (ownNumbers.includes(fromPhone)) return skip("caller_is_tenant");
   if (!NANP.test(fromPhone)) return skip("non_us_number");
   // Never send under another tenant's number, even if config is wrong.
@@ -161,7 +228,7 @@ export async function handleDialStatus(
   const messageId = await store.claimTextback(
     {
       tenantId,
-      idempotencyKey: `missed-call-textback:${call.callSid}`,
+      idempotencyKey: `missed-call-textback:${ctx.callSid}`,
       leadId,
       toPhone: fromPhone,
       fromPhone: sendFrom,
@@ -179,7 +246,7 @@ export async function handleDialStatus(
   } catch (err) {
     const sendError =
       err instanceof SmsSendError ? err : new SmsSendError("unknown", "unexpected", "send failed");
-    log("textback.send_failed", { ...ctx, messageId, kind: sendError.kind, code: sendError.code });
+    log("textback.send_failed", { ...logCtx, messageId, kind: sendError.kind, code: sendError.code });
     // Record the opt-out first: it matters more than the message status.
     if (sendError.code === TWILIO_UNSUBSCRIBED) {
       await withRetry(3, () => store.addOptOut(tenantId, fromPhone, "carrier"));
@@ -191,20 +258,16 @@ export async function handleDialStatus(
         errorCode: sendError.code,
       }),
     );
-    return hangup();
+    return { outcome: { kind: sendError.kind === "rejected" ? "failed" : "unknown" }, messageId };
   }
 
   // The text is out. A failure to record that must not relabel it or resend;
   // a row left 'pending' is picked up by the runbook's review query.
   try {
     await withRetry(3, () => store.markMessage(messageId, { status: "sent", providerSid: sid }));
-    log("textback.sent", { ...ctx, messageId });
+    log("textback.sent", { ...logCtx, messageId });
   } catch (err) {
-    log("textback.mark_sent_failed", { ...ctx, messageId, providerSid: sid, error: errorLabel(err) });
+    log("textback.mark_sent_failed", { ...logCtx, messageId, providerSid: sid, error: errorLabel(err) });
   }
-
-  const response = new VoiceResponse();
-  response.say("Sorry we missed your call. We'll text you in just a moment.");
-  response.hangup();
-  return response.toString();
+  return { outcome: { kind: "sent" }, messageId };
 }
