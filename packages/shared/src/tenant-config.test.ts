@@ -49,6 +49,23 @@ describe("tenantConfigSchema", () => {
     expect(isValid(withChanges({ services: [...example.services, dup] }))).toBe(false);
   });
 
+  it("requires a valid forwarding number and a bounded ring time", () => {
+    expect(isValid(withChanges({ calls: {} }))).toBe(false);
+    expect(isValid(withChanges({ calls: { forwardToNumber: "4235550100" } }))).toBe(false);
+    expect(
+      isValid(withChanges({ calls: { forwardToNumber: "+14235550100", ringSeconds: 90 } })),
+    ).toBe(false);
+    expect(parseTenantConfig(example).calls.ringSeconds).toBe(18);
+  });
+
+  it("requires STOP in the opt-out wording", () => {
+    const messaging = (optOutText: string) =>
+      withChanges({ messaging: { a2pStatus: "not_started", optOutText } });
+    expect(isValid(messaging("Thanks!"))).toBe(false);
+    expect(isValid(messaging("reply stop to opt out"))).toBe(false);
+    expect(isValid(messaging("Text STOP to unsubscribe"))).toBe(true);
+  });
+
   it("rejects an unsafe slug", () => {
     expect(isValid(withChanges({ slug: "../other-tenant" }))).toBe(false);
     expect(isValid(withChanges({ slug: "Example HVAC" }))).toBe(false);
