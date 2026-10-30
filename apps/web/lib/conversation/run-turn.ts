@@ -11,7 +11,7 @@ import {
   type Question,
   type Turn,
 } from "@sc/ai";
-import { canSendTexts, type TenantConfig } from "@sc/shared";
+import { canSendTexts, formatSlot, type TenantConfig } from "@sc/shared";
 import { SmsSendError, errorLabel } from "../missed-call/types";
 import { sendNotification } from "../notifications/dispatch";
 import {
@@ -39,6 +39,7 @@ const NANP = /^\+1[2-9]\d{9}$/;
 const TWILIO_UNSUBSCRIBED = "21610";
 const DISCLOSURE_START = "Yes, I'm an AI assistant";
 const ADDRESS_AGAIN_START = "Sorry, I didn't catch that. What's the street address";
+const BOOKED_START = "You're booked for an estimate";
 const ADDRESS_ASK = /^Great, .+ it is\. What's the street address/;
 
 type Outcome =
@@ -156,6 +157,7 @@ function nextQuestion(config: TenantConfig, d: LeadDetails): Question | null {
 async function decide(
   msg: CustomerMessage,
   askedAddressAgain: boolean,
+  bookedConfirmed: boolean,
   latest: string,
   history: Turn[],
   conversation: Conversation,
@@ -192,7 +194,7 @@ async function decide(
           ? await planChoice(msg, conversation, latest, model, deps)
           : stage === "asking_address"
             ? await planAddressAndBook(msg, conversation, latest, askedAddressAgain, model, deps)
-            : await planResumeBooking(msg, conversation, deps);
+            : await planResumeBooking(msg, conversation, bookedConfirmed, deps);
       return { action: "booking", plan, info: plan.info, category };
     } catch (err) {
       return { ...unavailable("booking", err), category } as Outcome;
@@ -269,7 +271,8 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
     if (ADDRESS_ASK.test(m.text)) askedAgain = false;
     else if (m.text.startsWith(ADDRESS_AGAIN_START)) askedAgain = true;
   }
-  const outcome = await decide(msg, askedAgain, latest, history, conversation, config, model, disclosed, deps, ctx);
+  const bookedConfirmed = thread.some((m) => m.from === "business" && m.text.startsWith(BOOKED_START));
+  const outcome = await decide(msg, askedAgain, bookedConfirmed, latest, history, conversation, config, model, disclosed, deps, ctx);
   const info = "info" in outcome ? outcome.info : undefined;
   const turns = (action: TurnAction, reason?: string, outboundMessageId?: string | null): TurnRecord[] =>
     sids.map((sid) => ({
@@ -287,7 +290,7 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
     }));
 
   if (outcome.action === "emergency") {
-    await handleEmergency(msg, conversation, sids, outcome.category, deps);
+    await handleEmergency(msg, conversation, sids, outcome.category, deps, pendingBooking(conversation, config));
     return true;
   }
 
@@ -310,8 +313,8 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
         ? null
         : { kind: outcome.action === "complete" ? "complete" : outcome.action === "turn_limit" ? "turn_limit" : outcome.action === "out_of_area" ? "out_of_area" : outcome.action === "unlisted_service" ? "unlisted_service" : outcome.action === "handoff" ? "handoff" : "fallback" };
 
-  // The event is on their calendar: if we can't confirm it, the owner must know.
-  const onCalendar = outcome.action === "booking" ? outcome.plan.onCalendar : undefined;
+  // The event is (or may be) on their calendar: if we can't confirm it, the owner must know.
+  const onCalendar = outcome.action === "booking" ? outcome.plan.onCalendar : pendingBooking(conversation, config);
   let outboundId: string | null = null;
   if (message) {
     // Last checks before texting: they may have just replied STOP, or an
@@ -360,10 +363,18 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
   }
   // The owner email is queued before the turn is recorded: if it can't be,
   // the message stays unhandled and is forwarded instead (never lost).
-  await finish(msg, conversation, outcome.action === "complete" ? "completed" : "handed_off", outcome.reason, details, deps);
+  await finish(msg, conversation, outcome.action === "complete" ? "completed" : "handed_off", outcome.reason, details, deps, undefined, onCalendar);
   await store.recordTurns(turns(outcome.action, outcome.reason, outboundId));
   log("conversation.turn", { ...ctx, action: outcome.action, category: outcome.category ?? "none", merged: sids.length - 1 });
   return true;
+}
+
+// Mid-booking (event being created, or created but not confirmed): what the
+// owner needs to know if the conversation ends another way.
+function pendingBooking(conversation: Conversation, config: TenantConfig): { slot: string; address: string; maybe?: boolean } | undefined {
+  const { stage, chosenSlot, address } = conversation.booking;
+  if ((stage !== "booking" && stage !== "booked") || !chosenSlot || !address) return undefined;
+  return { slot: formatSlot(chosenSlot, config.timezone), address, maybe: stage === "booking" };
 }
 
 async function finish(
@@ -374,7 +385,7 @@ async function finish(
   details: LeadDetails | undefined,
   deps: ConversationDeps,
   outcome: ConversationOutcome = status === "completed" ? "complete" : "needs_you",
-  booking?: { slot: string; address: string },
+  booking?: { slot: string; address: string; maybe?: boolean },
 ): Promise<void> {
   await deps.store.setStatus(conversation.id, status, reason);
   await emailOwner(msg, conversation, outcome, reason, details, `conversation-update:${conversation.id}:${outcome}`, deps, booking);
@@ -423,6 +434,7 @@ async function handleEmergency(
   sids: string[],
   category: string,
   deps: ConversationDeps,
+  booking?: { slot: string; address: string; maybe?: boolean },
 ): Promise<void> {
   const { store, log, notifications } = deps;
   const { tenantId, config } = msg;
@@ -455,7 +467,7 @@ async function handleEmergency(
   if (conversation.status !== "handed_off") await store.setStatus(conversation.id, "handed_off", "emergency");
   // Every emergency text reaches the owner's inbox; queued before the turn is
   // recorded so a failure leaves the message to be forwarded.
-  await emailOwner(msg, conversation, "emergency", category, conversation.details, `emergency:${sid}`, deps);
+  await emailOwner(msg, conversation, "emergency", category, conversation.details, `emergency:${sid}`, deps, booking);
   await store.recordTurns(
     sids.map((s) => ({
       tenantId,
@@ -478,7 +490,7 @@ async function emailOwner(
   details: LeadDetails | undefined,
   key: string,
   deps: ConversationDeps,
-  booking?: { slot: string; address: string },
+  booking?: { slot: string; address: string; maybe?: boolean },
 ): Promise<void> {
   const { store, log, notifications } = deps;
   const { tenantId, config } = msg;

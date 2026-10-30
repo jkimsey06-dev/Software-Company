@@ -279,10 +279,18 @@ async function planBook(
 export async function planResumeBooking(
   msg: BookingMsg,
   conversation: Conversation,
+  confirmed: boolean,
   deps: ConversationDeps,
 ): Promise<BookingPlan> {
   const { chosenSlot: slot, address, bookedEventId } = conversation.booking;
   if (!slot || !address || !bookedEventId) return handOff("booking_uncertain", undefined, "handoff");
+  const booking = { slot: formatSlot(slot, msg.config.timezone), address };
+  // Confirmed already, but the conversation wasn't closed: close it, no text.
+  if (confirmed && conversation.booking.stage === "booked") {
+    return { action: "booked", reason: "already_confirmed", message: null, terminal: { status: "completed", outcome: "booked", reason: "booked", booking } };
+  }
+  // Too late to book it now (the retry came much later): the owner decides.
+  if (slot.getTime() < nowFrom(deps).getTime() + MIN_BOOK_MINUTES * 60_000) return uncertain(msg, slot, address);
   const client = await calendar(msg, deps);
   if (!client || client === "revoked") {
     if (client === "revoked") await onRevoked(msg.tenantId, deps);

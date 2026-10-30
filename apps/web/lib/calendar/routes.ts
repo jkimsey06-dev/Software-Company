@@ -63,7 +63,8 @@ export function callbackRoute(getDeps: () => CalendarRouteDeps) {
       // A link sent before the current connection can't replace it (an old,
       // forwarded link would otherwise let someone else's calendar take over).
       const existing = await deps.store.getConnection(link.tenantId);
-      if (existing?.status === "connected" && existing.connectedAt.getTime() > link.issuedAt) {
+      // Also after a revoke: only a link made since then can reconnect.
+      if (existing && existing.connectedAt.getTime() > link.issuedAt) {
         deps.log("calendar.stale_link", { tenantId: link.tenantId });
         return INVALID();
       }

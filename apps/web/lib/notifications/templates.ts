@@ -157,7 +157,7 @@ export function renderConversationUpdateEmail(
     outcome: ConversationOutcome;
     reason: string;
     details?: LeadDetails;
-    booking?: { slot: string; address: string };
+    booking?: { slot: string; address: string; maybe?: boolean };
     thread: { from: "customer" | "business"; text: string }[];
   },
 ): { subject: string; body: string } {
@@ -178,14 +178,14 @@ export function renderConversationUpdateEmail(
     lines.push(`${caller} is ready for a call back. We told them you'll reach out to set up a time.`);
   } else {
     lines.push(`${caller} needs you to take over. ${reasonLine(update.reason)}`.trim());
-    if (update.booking) {
-      lines.push(
-        update.reason === "booking_uncertain"
-          ? `It may be on your calendar for ${update.booking.slot}. Check your calendar, then call them to confirm.`
-          : `It's on your calendar for ${update.booking.slot}, but they haven't been told. Call them to confirm, or remove it.`,
-      );
-      lines.push(`Address (as they wrote it): ${update.booking.address}`);
-    }
+  }
+  if (update.booking && update.outcome !== "booked") {
+    lines.push(
+      update.booking.maybe || update.reason === "booking_uncertain"
+        ? `An estimate for ${update.booking.slot} may be on your calendar. Check your calendar, then call them to confirm.`
+        : `An estimate for ${update.booking.slot} is on your calendar, but they haven't been told. Call them to confirm, or remove it.`,
+    );
+    lines.push(`Address (as they wrote it): ${update.booking.address}`);
   }
   const d = update.details;
   if (d) {

@@ -29,11 +29,16 @@ export function cleanArea(area: string | null): string | null {
 const STREET_WORDS =
   "st|street|rd|road|ave|avenue|dr|drive|ln|lane|ct|court|blvd|boulevard|way|pl|place|cir|circle|pkwy|parkway|hwy|highway|trl|trail|ter|terrace|pike|loop|run|pt|point|sq|square|row|path|cv|cove|bnd|bend|ridge|rdg|holw|hollow|xing|crossing|route|rte|county road|cr|lp|walk|alley|aly|fwy|freeway|tpke|turnpike|byp|bypass|mtn|mountain|vw|view|hts|heights|est|estates|cres|crescent|grv|grove|hl|hill|pass|spur|trce|trace";
 // House number (optionally with a grid prefix like N1234), then a street that
-// ends in a street word or a numbered road ("Hwy 64", "County Rd 5").
+// ends in a street word or a numbered road ("Hwy 64", "County Rd 5"). After
+// it, only a unit and a city/state/ZIP: no free text ("gate code, prepaid...")
+// rides along onto the owner's calendar.
+const UNIT = String.raw`(?:,? (?:apt|unit|ste|suite|lot|#) ?#?[a-z0-9-]{1,6})?`;
+// City: up to three words ("Signal Mountain", "Lookout Mountain TN").
+const PLACE = String.raw`(?:,? [a-z][a-z.'-]{1,19}(?: [a-z][a-z.'-]{1,19}){0,2}?(?:,? [a-z]{2})?(?:,? \d{5}(?:-\d{4})?)?)?`;
 const STREET_ADDRESS = new RegExp(
-  `^[nsew]?\\d{1,6}[a-z]?(?:-\\d{1,4})? (?:[a-z0-9.'-]+ ){0,5}(?:${STREET_WORDS})(?: \\d{1,4}[a-z]?)?(?:[ ,].*)?$`,
+  `^[nsew]?\\d{1,6}[a-z]?(?:-\\d{1,4})? (?:[a-z0-9.'-]+ ){0,5}(?:${STREET_WORDS})\\.?(?: \\d{1,4}[a-z]?)?${UNIT}${PLACE}\\.?$`,
 );
-const RURAL_ROUTE = /^(?:rr|rural route|hc|highway contract) ?\d{1,4},? box \d{1,6}\b/;
+const RURAL_ROUTE = new RegExp(String.raw`^(?:rr|rural route|hc|highway contract) ?\d{1,4},? box \d{1,6}${PLACE}\.?$`);
 const PO_BOX = /\bp\.? ?o\.? ?box\b|\bpost office box\b/;
 const LINK = /https?:|www\.|\b[a-z0-9-]+\.(?:com|net|org|io|co|us|biz|info|me|ly|app)\b/;
 const PHONE = /\d[\d ().-]{8,}\d/;

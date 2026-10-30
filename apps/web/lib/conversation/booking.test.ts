@@ -242,6 +242,50 @@ describe("booking races and retries", () => {
     expect(s.model.extractAddressCalls).toBe(0);
   });
 
+  it("a resumed booking whose time is now too close isn't created; the owner is told to check", async () => {
+    const s = setup();
+    await s.say("AC repair in Cleveland, soon");
+    await s.say("1");
+    const slot = new Date("2026-10-30T14:30:00Z"); // 30 minutes from NOW
+    await s.store.setBooking(s.conv().id, { stage: "booking", chosenSlot: slot, bookedEventId: eventIdFor(s.conv().id, slot), address: "123 Main St" });
+    await s.say("hello?");
+    expect(s.calendar.events).toHaveLength(0);
+    expect(bodies(s).some((b) => b.startsWith("You're booked"))).toBe(false);
+    expect(s.conv()).toMatchObject({ status: "handed_off", reason: "booking_uncertain" });
+    expect(s.email.sent.at(-1)?.text).toContain("may be on your calendar");
+  });
+
+  it("booked and confirmed but not closed: a later 'thanks' closes it without a second confirmation", async () => {
+    const s = setup();
+    await s.say("AC repair in Cleveland, soon");
+    await s.say("2");
+    s.model.addresses.push("123 Main St");
+    const real = s.store.setStatus.bind(s.store);
+    let failed = false;
+    s.store.setStatus = async (...a) => {
+      if (!failed) {
+        failed = true;
+        throw new Error("supabase 503");
+      }
+      return real(...a);
+    };
+    await s.say("123 Main St").catch(() => undefined);
+    expect(bodies(s).filter((b) => b.startsWith("You're booked"))).toHaveLength(1);
+    await s.say("thanks!");
+    expect(bodies(s).filter((b) => b.startsWith("You're booked"))).toHaveLength(1);
+    expect(s.conv()).toMatchObject({ status: "completed", reason: "booked" });
+  });
+
+  it("asking for a person while the event is being created tells the owner it may be booked", async () => {
+    const s = setup();
+    await s.say("AC repair in Cleveland, soon");
+    const slot = new Date("2026-11-02T13:00:00Z");
+    await s.store.setBooking(s.conv().id, { stage: "booking", chosenSlot: slot, bookedEventId: eventIdFor(s.conv().id, slot), address: "123 Main St" });
+    s.model.categories.push("wants_human");
+    await s.say("actually can someone call me");
+    expect(s.email.sent.at(-1)?.text).toContain("may be on your calendar");
+  });
+
   it("an event the owner deleted is not put back", async () => {
     const s = setup();
     await s.say("AC repair in Cleveland, soon");

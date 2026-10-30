@@ -113,6 +113,14 @@ describe("callback", () => {
     expect(s.saved).toHaveLength(0);
   });
 
+  it("after a revoke, only a link made since then can reconnect", async () => {
+    const s = setup();
+    const old = createLinkToken(TENANT, SECRET, Date.now() - 3_600_000);
+    s.existing.current = { calendarId: "primary", refreshTokenEnc: "v1.x", status: "revoked", connectedAt: new Date(Date.now() - 60_000) };
+    expect((await callbackRoute(() => s.deps)(callback(old))).status).toBe(400);
+    expect((await callbackRoute(() => s.deps)(callback(createLinkToken(TENANT, SECRET)))).status).toBe(200);
+  });
+
   it("a newer link replaces a connection, and ops is told", async () => {
     const s = setup();
     s.existing.current = { calendarId: "primary", refreshTokenEnc: "v1.x", status: "connected", connectedAt: new Date(Date.now() - 3_600_000) };
