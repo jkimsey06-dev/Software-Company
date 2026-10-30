@@ -19,11 +19,15 @@ export function formatPhone(e164: string): string {
 }
 
 function formatTime(at: Date, timezone: string): string {
+  // Date and zone included, so the repeated hour at a DST change is unambiguous.
   return new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
     weekday: "short",
+    month: "short",
+    day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    timeZoneName: "short",
   }).format(at);
 }
 

@@ -51,17 +51,19 @@ export function createNotificationStore(db: SupabaseClient): NotificationStore {
       };
     },
 
-    async markSent(id, providerId) {
+    async markSent(id, attempt, providerId) {
       data(
         await db
           .from("notifications")
           .update({ status: "sent", provider_id: providerId, locked_at: null, last_error_code: null })
-          .eq("id", id),
+          .eq("id", id)
+          .eq("status", "sending")
+          .eq("attempts", attempt),
         "mark notification sent",
       );
     },
 
-    async markFailed(id, errorCode, retryAt) {
+    async markFailed(id, attempt, errorCode, retryAt) {
       data(
         await db
           .from("notifications")
@@ -71,9 +73,16 @@ export function createNotificationStore(db: SupabaseClient): NotificationStore {
             next_attempt_at: (retryAt ?? new Date()).toISOString(),
             locked_at: null,
           })
-          .eq("id", id),
+          .eq("id", id)
+          .eq("status", "sending")
+          .eq("attempts", attempt),
         "mark notification failed",
       );
+    },
+
+    async expireOld() {
+      const count = data(await db.rpc("expire_notifications"), "expire notifications");
+      return (count as number | null) ?? 0;
     },
 
     async due(limit) {

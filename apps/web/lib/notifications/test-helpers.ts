@@ -8,6 +8,8 @@ interface Row extends NewNotification {
   nextAttemptAt: number;
   providerId?: string;
   lastErrorCode?: string;
+  // Set by makeDue(): the sender holding this row is treated as dead.
+  staleLock?: boolean;
 }
 
 // In-memory outbox with the same rules as the notifications table and its
@@ -29,20 +31,26 @@ export class FakeNotificationStore implements NotificationStore {
   async claim(id: string): Promise<ClaimedNotification | null> {
     const row = this.rows.find((r) => r.id === id);
     if (!row || row.nextAttemptAt > Date.now()) return null;
-    if (row.status !== "pending" && row.status !== "failed") return null;
+    const stale = row.status === "sending" && row.staleLock;
+    if (row.status !== "pending" && row.status !== "failed" && !stale) return null;
     row.status = "sending";
+    row.staleLock = false;
     row.attempts += 1;
     return { id: row.id, tenantId: row.tenantId, recipientEmail: row.recipientEmail, subject: row.subject, body: row.body, attempts: row.attempts };
   }
 
-  async markSent(id: string, providerId: string) {
+  expiredCount = 0;
+
+  async markSent(id: string, attempt: number, providerId: string) {
     const row = this.get(id);
+    if (row.status !== "sending" || row.attempts !== attempt) return;
     row.status = "sent";
     row.providerId = providerId;
   }
 
-  async markFailed(id: string, code: string, retryAt: Date | null) {
+  async markFailed(id: string, attempt: number, code: string, retryAt: Date | null) {
     const row = this.get(id);
+    if (row.status !== "sending" || row.attempts !== attempt) return;
     row.status = retryAt ? "failed" : "dead";
     row.lastErrorCode = code;
     row.nextAttemptAt = retryAt ? retryAt.getTime() : Date.now();
@@ -50,9 +58,17 @@ export class FakeNotificationStore implements NotificationStore {
 
   async due(limit: number) {
     return this.rows
-      .filter((r) => (r.status === "pending" || r.status === "failed") && r.nextAttemptAt <= Date.now())
+      .filter(
+        (r) =>
+          (r.status === "pending" || r.status === "failed" || (r.status === "sending" && r.staleLock)) &&
+          r.nextAttemptAt <= Date.now(),
+      )
       .slice(0, limit)
       .map((r) => r.id);
+  }
+
+  async expireOld() {
+    return this.expiredCount;
   }
 
   get(id: string): Row {
@@ -61,9 +77,13 @@ export class FakeNotificationStore implements NotificationStore {
     return row;
   }
 
-  // Lets a test fast-forward past a retry delay.
+  // Fast-forwards time: past every retry delay, and past the stale-lock window
+  // for rows a sender claimed but never finished.
   makeDue() {
-    for (const r of this.rows) r.nextAttemptAt = 0;
+    for (const r of this.rows) {
+      r.nextAttemptAt = 0;
+      if (r.status === "sending") r.staleLock = true;
+    }
   }
 }
 

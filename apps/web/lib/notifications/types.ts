@@ -30,9 +30,14 @@ export interface NotificationStore {
   // Takes the row for sending. Null if it's sent, dead, not due, or held by
   // another live sender. Only the caller that gets the row may send it.
   claim(id: string): Promise<ClaimedNotification | null>;
-  markSent(id: string, providerId: string): Promise<void>;
-  markFailed(id: string, errorCode: string, retryAt: Date | null): Promise<void>;
+  // Both only apply while this sender still holds the claim (same attempt), so
+  // a slow sender can't overwrite the result of one that retook its lock.
+  markSent(id: string, attempt: number, providerId: string): Promise<void>;
+  markFailed(id: string, attempt: number, errorCode: string, retryAt: Date | null): Promise<void>;
   due(limit: number): Promise<string[]>;
+  // Marks rows too old to send ('dead', 'expired'). Returns how many. A late
+  // email is worse than none, and the provider's idempotency window is 24h.
+  expireOld(): Promise<number>;
 }
 
 export class EmailSendError extends Error {

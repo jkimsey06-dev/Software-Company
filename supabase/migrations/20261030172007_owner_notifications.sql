@@ -53,7 +53,9 @@ create policy notifications_select_member
 
 -- Claims one notification for sending. Returns the row only to the caller that
 -- won the claim; a row already sent, dead, or held by a live sender is skipped.
--- A lock older than p_stale_after is treated as abandoned.
+-- A lock older than p_stale_after is treated as abandoned. Rows older than 12h
+-- are never sent (see expire_notifications): late is worse than never, and the
+-- email provider only remembers idempotency keys for 24h.
 create function public.claim_notification(p_id uuid, p_stale_after interval)
 returns setof public.notifications
 language sql
@@ -62,6 +64,7 @@ as $$
   update public.notifications
   set status = 'sending', locked_at = now(), attempts = attempts + 1
   where id = p_id
+    and created_at > now() - interval '12 hours'
     and next_attempt_at <= now()
     and (
       status in ('pending', 'failed')
@@ -78,7 +81,8 @@ stable
 set search_path = ''
 as $$
   select id from public.notifications
-  where next_attempt_at <= now()
+  where created_at > now() - interval '12 hours'
+    and next_attempt_at <= now()
     and (
       status in ('pending', 'failed')
       or (status = 'sending' and locked_at < now() - p_stale_after)
@@ -87,7 +91,25 @@ as $$
   limit least(greatest(p_limit, 1), 100);
 $$;
 
+-- Gives up on unsent rows older than 12h. Returns how many were expired.
+create function public.expire_notifications()
+returns int
+language sql
+set search_path = ''
+as $$
+  with expired as (
+    update public.notifications
+    set status = 'dead', last_error_code = 'expired', locked_at = null
+    where status in ('pending', 'failed', 'sending')
+      and created_at <= now() - interval '12 hours'
+    returning 1
+  )
+  select count(*)::int from expired;
+$$;
+
 revoke all on function public.claim_notification(uuid, interval) from public, anon, authenticated;
+revoke all on function public.expire_notifications() from public, anon, authenticated;
+grant execute on function public.expire_notifications() to service_role;
 revoke all on function public.due_notifications(int, interval) from public, anon, authenticated;
 grant execute on function public.claim_notification(uuid, interval) to service_role;
 grant execute on function public.due_notifications(int, interval) to service_role;

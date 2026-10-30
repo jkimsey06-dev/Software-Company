@@ -92,7 +92,17 @@ begin
   if not exists (select 1 from public.due_notifications(10, interval '5 minutes') d where d = '30000000-0000-0000-0000-0000000000f1') then
     raise exception 'FAIL: failed notification is not due for retry';
   end if;
-  raise notice 'ok - one sender per notification, stale locks retaken, sent rows never resent';
+  -- Older than 12h: never claimed, and expire_notifications marks it dead.
+  update public.notifications set status = 'pending', next_attempt_at = now(), created_at = now() - interval '13 hours'
+  where id = '30000000-0000-0000-0000-0000000000f1';
+  select count(*) into n from public.claim_notification('30000000-0000-0000-0000-0000000000f1', interval '5 minutes');
+  if n <> 0 then raise exception 'FAIL: a 13h-old notification was claimed'; end if;
+  if public.expire_notifications() <> 1 then raise exception 'FAIL: old notification not expired'; end if;
+  if (select status from public.notifications where id = '30000000-0000-0000-0000-0000000000f1') <> 'dead' then
+    raise exception 'FAIL: expired notification is not dead';
+  end if;
+  if public.expire_notifications() <> 0 then raise exception 'FAIL: expired twice'; end if;
+  raise notice 'ok - one sender per notification, stale locks retaken, sent and expired rows never sent';
 end;
 $$;
 
@@ -114,7 +124,8 @@ begin
     'delete from public.notifications',
     'insert into public.notifications (tenant_id, kind, idempotency_key, recipient_email, subject, body) values (''10000000-0000-0000-0000-0000000000e1'', ''new_lead'', ''u'', ''x@example.com'', ''S'', ''B'')',
     'select * from public.claim_notification(''30000000-0000-0000-0000-0000000000e1'', interval ''0 seconds'')',
-    'select * from public.due_notifications(10, interval ''0 seconds'')'
+    'select * from public.due_notifications(10, interval ''0 seconds'')',
+    'select public.expire_notifications()'
   ] loop
     begin
       execute stmt;

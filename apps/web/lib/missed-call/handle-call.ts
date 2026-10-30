@@ -153,21 +153,35 @@ export async function handleDialStatus(
   await store.linkCallToLead(tenantId, call.callSid, leadId);
   log("missed_call.lead_saved", { ...ctx, leadId });
 
-  const textback = await textBack(
-    { tenantId, config, callSid: call.callSid, leadId, callerPhone: fromPhone, businessNumber: call.to, recognized },
-    deps,
-  );
+  const notify = (textback: TextbackOutcome, messageId?: string) => {
+    // A tenant calling its own number isn't a lead worth an email.
+    if (textback.kind === "skipped" && textback.reason === "caller_is_tenant") return;
+    // Queues work for after the response; never blocks or throws.
+    void deps.notifyOwner?.({
+      tenantId,
+      config,
+      leadId,
+      callerPhone: fromPhone,
+      calledAt: new Date(),
+      textback,
+      messageId,
+    });
+  };
 
+  let textback: Awaited<ReturnType<typeof textBack>>;
+  try {
+    textback = await textBack(
+      { tenantId, config, callSid: call.callSid, leadId, callerPhone: fromPhone, businessNumber: call.to, recognized },
+      deps,
+    );
+  } catch (err) {
+    // The lead is saved but we can't say whether a text went out. The owner
+    // still hears about the lead before the error goes up to the route.
+    notify({ kind: "unknown" });
+    throw err;
+  }
   // The owner hears about every new lead, whatever happened to the text-back.
-  await deps.notifyOwner?.({
-    tenantId,
-    config,
-    leadId,
-    callerPhone: fromPhone,
-    calledAt: new Date(),
-    textback: textback.outcome,
-    messageId: textback.messageId,
-  });
+  notify(textback.outcome, textback.messageId);
 
   if (textback.outcome.kind !== "sent") return hangup();
   const response = new VoiceResponse();

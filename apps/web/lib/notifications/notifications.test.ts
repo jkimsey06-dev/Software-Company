@@ -103,6 +103,13 @@ describe("owner email for a missed call", () => {
     expect(email.sent).toHaveLength(0);
   });
 
+  it("doesn't email when the tenant calls its own number", async () => {
+    const { deps, email, timer } = callFlow();
+    await handleDialStatus(missed({ from: "+14235550100" }), deps); // the forwarding phone
+    await timer.runAll();
+    expect(email.sent).toHaveLength(0);
+  });
+
   it("skips quietly when the tenant has no owner email", async () => {
     const config = textingConfig();
     config.escalationContact = { name: "Owner", phone: "+14235550100" };
@@ -114,11 +121,13 @@ describe("owner email for a missed call", () => {
   });
 
   it("never breaks the call flow if the outbox is down, and alerts ops", async () => {
-    const { deps, sender, outbox, alerts } = callFlow();
+    const { deps, sender, outbox, alerts, timer } = callFlow();
     outbox.failEnqueue = true;
     const twiml = await handleDialStatus(missed(), deps);
     expect(twiml).toContain("<Say>");
     expect(sender.sent).toHaveLength(1);
+    expect(alerts).toHaveLength(0); // nothing runs before Twilio has its answer
+    await timer.runAll();
     expect(alerts.map((a) => a.event)).toEqual(["notification.enqueue_failed"]);
   });
 });
@@ -193,6 +202,15 @@ describe("sendNotification", () => {
   });
 });
 
+describe("expiry", () => {
+  it("alerts ops when the cron expires notifications that are too old to send", async () => {
+    const { deps, store, alerts } = notificationDeps();
+    store.expiredCount = 3;
+    await sendDueNotifications(deps);
+    expect(alerts).toEqual([{ event: "notification.expired", fields: { count: "3" } }]);
+  });
+});
+
 describe("renderNewLeadEmail", () => {
   it("is plain text with a formatted number and the time in the tenant's timezone", () => {
     const { subject, body } = renderNewLeadEmail(textingConfig(), {
@@ -202,7 +220,7 @@ describe("renderNewLeadEmail", () => {
     });
     expect(subject).toBe("Missed call: (423) 555-0111");
     expect(subject).not.toMatch(/[\r\n]/);
-    expect(body).toContain("Example Heating & Air at Fri 2:05 PM");
+    expect(body).toContain("Example Heating & Air at Fri, Oct 30, 2:05 PM EDT");
     expect(body).toContain(`tel:${CALLER}`);
     expect(body).not.toMatch(/<[a-z]/i);
   });

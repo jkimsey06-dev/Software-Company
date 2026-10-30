@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { errorLabel } from "../missed-call/types";
 import { sendDueNotifications } from "./dispatch";
 import type { NotificationDeps } from "./types";
 
@@ -20,7 +21,14 @@ export function cronRoute(getSecret: () => string | undefined, getDeps: () => No
     }
     const deps = getDeps();
     if (!deps) return Response.json({ ok: true, processed: 0, disabled: true });
-    const processed = await sendDueNotifications(deps);
-    return Response.json({ ok: true, processed });
+    try {
+      const processed = await sendDueNotifications(deps);
+      return Response.json({ ok: true, processed });
+    } catch (err) {
+      const error = errorLabel(err);
+      deps.log("notification.cron_failed", { error });
+      await deps.opsAlert("notification.cron_failed", { error });
+      return Response.json({ ok: false }, { status: 500 });
+    }
   };
 }

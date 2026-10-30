@@ -11,42 +11,46 @@ export async function sendNotification(id: string, deps: NotificationDeps): Prom
   const { store, log } = deps;
   const claimed = await store.claim(id);
   if (!claimed) return;
+  const ctx = { tenantId: claimed.tenantId, notificationId: id };
 
+  let providerId: string;
   try {
-    const { id: providerId } = await deps.email.send({
+    ({ id: providerId } = await deps.email.send({
       to: claimed.recipientEmail,
       subject: claimed.subject,
       text: claimed.body,
       // Same key on every attempt: the provider drops a repeat of a sent email.
       idempotencyKey: `notification:${claimed.id}`,
-    });
-    await store.markSent(id, providerId);
-    log("notification.sent", { tenantId: claimed.tenantId, notificationId: id });
+    }));
   } catch (err) {
     const code = err instanceof EmailSendError ? err.code : errorLabel(err);
     const retryable = !(err instanceof EmailSendError) || err.retryable;
     const delay = retryable ? RETRY_DELAYS_MS[claimed.attempts - 1] : undefined;
     const retryAt = delay === undefined ? null : new Date(Date.now() + delay);
-    await store.markFailed(id, code, retryAt);
-    log("notification.failed", {
-      tenantId: claimed.tenantId,
-      notificationId: id,
-      code,
-      attempt: claimed.attempts,
-      willRetry: retryAt !== null,
-    });
-    if (!retryAt) {
-      await deps.opsAlert("notification.dead", {
-        tenantId: claimed.tenantId,
-        notificationId: id,
-        code,
-      });
-    }
+    log("notification.failed", { ...ctx, code, attempt: claimed.attempts, willRetry: retryAt !== null });
+    // Alert before recording: the operator must hear even if the database is down.
+    if (!retryAt) await deps.opsAlert("notification.dead", { ...ctx, code });
+    await store.markFailed(id, claimed.attempts, code, retryAt);
+    return;
+  }
+
+  // The email is out. If recording that fails, the row's lock goes stale and a
+  // later attempt resends with the same idempotency key, which the provider
+  // drops. Never count it as a failed send.
+  try {
+    await store.markSent(id, claimed.attempts, providerId);
+    log("notification.sent", ctx);
+  } catch (err) {
+    log("notification.mark_sent_failed", { ...ctx, providerId, error: errorLabel(err) });
   }
 }
 
-// Cron entry point: retry everything that's due.
+// Cron entry point: expire stale rows, then retry everything that's due.
 export async function sendDueNotifications(deps: NotificationDeps, limit = 50): Promise<number> {
+  const expired = await deps.store.expireOld();
+  if (expired > 0) {
+    await deps.opsAlert("notification.expired", { count: String(expired) });
+  }
   const ids = await deps.store.due(limit);
   for (const id of ids) {
     try {
