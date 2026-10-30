@@ -1,3 +1,10 @@
+import { after } from "next/server";
+import { createNotificationStore } from "../notifications/supabase-store";
+import { readNotificationEnv } from "../notifications/env";
+import { createOpsAlert } from "../notifications/ops-alert";
+import { createOwnerNotifier, type Schedule } from "../notifications/owner";
+import { createResendSender } from "../notifications/resend-sender";
+import type { NotificationDeps } from "../notifications/types";
 import { readTwilioWebhookEnv } from "./env";
 import type { RouteDeps } from "./routes";
 import { createServiceClient, createSupabaseStore } from "./supabase-store";
@@ -8,12 +15,39 @@ const log: Logger = (event, fields = {}) => {
   console.log(JSON.stringify({ event, ...fields }));
 };
 
-let cached: RouteDeps | undefined;
+// Runs after the response is sent; the platform keeps the function alive for it.
+const schedule: Schedule = (task) => after(task);
+
+let cachedRoute: RouteDeps | undefined;
+let cachedNotifications: NotificationDeps | null | undefined;
+
+export function getNotificationDeps(): NotificationDeps | null {
+  if (cachedNotifications === undefined) {
+    const env = readNotificationEnv();
+    if (!env) {
+      log("notifications.disabled", { reason: "RESEND_API_KEY or NOTIFICATIONS_FROM_EMAIL not set" });
+      cachedNotifications = null;
+    } else {
+      const twilioEnv = readTwilioWebhookEnv();
+      const email = createResendSender(env.resendApiKey, env.fromEmail);
+      cachedNotifications = {
+        store: createNotificationStore(
+          createServiceClient(twilioEnv.supabaseUrl, twilioEnv.supabaseServiceRoleKey),
+        ),
+        email,
+        opsAlert: createOpsAlert(email, env.opsAlertEmail, log),
+        log,
+      };
+    }
+  }
+  return cachedNotifications;
+}
 
 export function getRouteDeps(): RouteDeps {
-  if (!cached) {
+  if (!cachedRoute) {
     const env = readTwilioWebhookEnv();
-    cached = {
+    const notifications = getNotificationDeps();
+    cachedRoute = {
       store: createSupabaseStore(
         createServiceClient(env.supabaseUrl, env.supabaseServiceRoleKey),
         log,
@@ -22,7 +56,10 @@ export function getRouteDeps(): RouteDeps {
       publicBaseUrl: env.publicBaseUrl,
       twilioAuthToken: env.twilioAuthToken,
       log,
+      notifyOwner: notifications ? createOwnerNotifier(notifications, schedule) : undefined,
+      opsAlert: notifications?.opsAlert ?? createOpsAlert(null, undefined, log),
+      schedule,
     };
   }
-  return cached;
+  return cachedRoute;
 }

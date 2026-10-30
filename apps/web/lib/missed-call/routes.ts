@@ -1,10 +1,15 @@
 import type { ZodType } from "zod";
 import { handleDialStatus, handleIncomingCall, type CallDeps } from "./handle-call";
 import { dialStatusParams, inboundCallParams, readVerifiedTwilioForm } from "./twilio-request";
+import type { Schedule } from "../notifications/owner";
+import type { OpsAlert } from "../notifications/types";
 import { errorLabel } from "./types";
 
 export interface RouteDeps extends CallDeps {
   twilioAuthToken: string;
+  // Alerts the operator; run after the response so Twilio isn't kept waiting.
+  opsAlert?: OpsAlert;
+  schedule?: Schedule;
 }
 
 function xml(body: string): Response {
@@ -57,7 +62,11 @@ export function dialStatusRoute(getDeps: () => RouteDeps) {
     } catch (err) {
       // The caller is still on the line: end the call cleanly rather than
       // playing Twilio's error message. The failure is logged for follow-up.
-      deps.log("dial_status.error", { callSid: CallSid, error: errorLabel(err) });
+      const error = errorLabel(err);
+      deps.log("dial_status.error", { callSid: CallSid, error });
+      // The lead may be lost: Twilio won't retry after a 200. Tell the operator.
+      const alert = deps.opsAlert;
+      if (alert) deps.schedule?.(() => alert("dial_status.error", { callSid: CallSid, error }));
       return xml('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
     }
   };
