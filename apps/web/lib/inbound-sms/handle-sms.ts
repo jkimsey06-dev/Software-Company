@@ -25,13 +25,17 @@ export async function handleInboundSms(msg: InboundSms, deps: SmsDeps): Promise<
     return noReply();
   }
   const fromPhone = msg.from;
-  const keyword = classifyKeyword(msg.body, msg.optOutType);
+  const { keyword, bare } = classifyKeyword(msg.body, msg.optOutType);
 
-  // Opt-outs first, before anything that could fail on the way.
-  if (keyword === "stop") await store.addOptOut(tenantId, fromPhone);
-  if (keyword === "start") await store.removeOptOut(tenantId, fromPhone);
-
-  const leadId = await store.findLatestLeadId(tenantId, fromPhone);
+  // The lead link is nice to have; it must never stand in the way of a STOP.
+  let leadId: string | null = null;
+  try {
+    leadId = await store.findLatestLeadId(tenantId, fromPhone);
+  } catch (err) {
+    log("sms.lead_lookup_failed", { ...ctx, error: errorLabel(err) });
+  }
+  // Message and opt-out change are recorded together, so a STOP is never lost
+  // between steps and a replayed START can't undo a later STOP.
   const isNew = await store.recordInbound({
     tenantId,
     messageSid: msg.messageSid,
@@ -45,10 +49,10 @@ export async function handleInboundSms(msg: InboundSms, deps: SmsDeps): Promise<
     log("sms.duplicate", ctx);
     return noReply();
   }
-  log("sms.received", { ...ctx, keyword: keyword ?? "none", hasLead: leadId !== null });
-  if (keyword) return noReply();
+  log("sms.received", { ...ctx, keyword: keyword ?? "none", bare, hasLead: leadId !== null });
+  if (bare) return noReply();
 
-  // A real reply: pass it to the owner until the AI conversation exists.
+  // Anything with words in it reaches the owner, until the AI conversation exists.
   if (deps.notifyReply) {
     try {
       const config = await store.loadTenantConfig(tenantId);
@@ -61,6 +65,7 @@ export async function handleInboundSms(msg: InboundSms, deps: SmsDeps): Promise<
         body: msg.body,
         numMedia: msg.numMedia,
         receivedAt: new Date(),
+        optedOut: keyword === "stop",
       });
     } catch (err) {
       log("sms.notify_failed", { ...ctx, error: errorLabel(err) });

@@ -55,12 +55,60 @@ begin
   end;
   begin
     insert into public.inbound_messages (tenant_id, message_sid, from_phone, to_phone, body)
-    values ('10000000-0000-0000-0000-0000000000a7', 'SM' || repeat('d', 32), '+14235551001', '+14235551000', repeat('x', 1601));
+    values ('10000000-0000-0000-0000-0000000000a7', 'SM' || repeat('d', 32), '+14235551001', '+14235551000', repeat('x', 5001));
     raise exception 'FAIL: oversized body accepted';
   exception when check_violation then
     null;
   end;
   raise notice 'ok - inbound messages are unique per MessageSid and tied to their own tenant';
+end;
+$$;
+
+-- record_inbound_sms: opt-out ordering ------------------------------------------------
+
+do $$
+declare
+  t uuid := '10000000-0000-0000-0000-0000000000b7';
+  p text := '+14235551199';
+  is_opted_out boolean;
+begin
+  -- START (s1), then STOP (s2), then a redelivery of the old START (s1).
+  perform public.record_inbound_sms(t, 'SM' || repeat('1', 32), p, '+14235551100', 'START', 'start', null);
+  perform public.record_inbound_sms(t, 'SM' || repeat('2', 32), p, '+14235551100', 'STOP', 'stop', null);
+  if public.record_inbound_sms(t, 'SM' || repeat('1', 32), p, '+14235551100', 'START', 'start', null) then
+    raise exception 'FAIL: redelivered message reported as new';
+  end if;
+  select exists (select 1 from public.opt_outs where tenant_id = t and phone = p) into is_opted_out;
+  if not is_opted_out then raise exception 'FAIL: a replayed START undid a later STOP'; end if;
+
+  -- A replayed old STOP doesn't undo a later START either.
+  perform public.record_inbound_sms(t, 'SM' || repeat('6', 32), p, '+14235551100', 'START', 'start', null);
+  perform public.record_inbound_sms(t, 'SM' || repeat('2', 32), p, '+14235551100', 'STOP', 'stop', null);
+  if exists (select 1 from public.opt_outs where tenant_id = t and phone = p) then
+    raise exception 'FAIL: a replayed STOP undid a later START';
+  end if;
+  perform public.record_inbound_sms(t, 'SM' || repeat('7', 32), p, '+14235551100', 'STOP', 'stop', null);
+
+  -- A new START clears the customer's own opt-out...
+  perform public.record_inbound_sms(t, 'SM' || repeat('3', 32), p, '+14235551100', 'START', 'start', null);
+  if exists (select 1 from public.opt_outs where tenant_id = t and phone = p) then
+    raise exception 'FAIL: new START did not clear the opt-out';
+  end if;
+
+  -- ...but never one the owner entered by hand.
+  insert into public.opt_outs (tenant_id, phone, source) values (t, p, 'manual');
+  perform public.record_inbound_sms(t, 'SM' || repeat('4', 32), p, '+14235551100', 'START', 'start', null);
+  if not exists (select 1 from public.opt_outs where tenant_id = t and phone = p and source = 'manual') then
+    raise exception 'FAIL: START removed a manual opt-out';
+  end if;
+
+  -- Cross-tenant: tenant G's START doesn't touch tenant H's opt-outs.
+  perform public.record_inbound_sms('10000000-0000-0000-0000-0000000000a7', 'SM' || repeat('5', 32), p, '+14235551000', 'START', 'start', null);
+  if not exists (select 1 from public.opt_outs where tenant_id = t and phone = p) then
+    raise exception 'FAIL: another tenant''s START removed this opt-out';
+  end if;
+  delete from public.inbound_messages where message_sid = 'SM' || repeat('5', 32);
+  raise notice 'ok - replayed keywords never undo later ones; START never clears manual or other tenants'' opt-outs';
 end;
 $$;
 
@@ -78,7 +126,8 @@ begin
   foreach stmt in array array[
     'insert into public.inbound_messages (tenant_id, message_sid, from_phone, to_phone, body) values (''10000000-0000-0000-0000-0000000000a7'', ''SM' || repeat('e', 32) || ''', ''+14235551001'', ''+14235551000'', ''x'')',
     'update public.inbound_messages set body = ''edited''',
-    'delete from public.inbound_messages'
+    'delete from public.inbound_messages',
+    'select public.record_inbound_sms(''10000000-0000-0000-0000-0000000000a7'', ''SM' || repeat('f', 32) || ''', ''+14235551001'', ''+14235551000'', ''START'', ''start'', null)'
   ] loop
     begin
       execute stmt;

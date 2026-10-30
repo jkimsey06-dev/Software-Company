@@ -33,44 +33,19 @@ export function createInboundSmsStore(db: SupabaseClient, log: Logger): InboundS
     },
 
     async recordInbound(m) {
-      const rows = data(
-        await db
-          .from("inbound_messages")
-          .upsert(
-            {
-              tenant_id: m.tenantId,
-              message_sid: m.messageSid,
-              from_phone: m.fromPhone,
-              to_phone: m.toPhone,
-              body: m.body,
-              keyword: m.keyword,
-              lead_id: m.leadId,
-            },
-            { onConflict: "message_sid", ignoreDuplicates: true },
-          )
-          .select("id"),
+      const isNew = data(
+        await db.rpc("record_inbound_sms", {
+          p_tenant_id: m.tenantId,
+          p_message_sid: m.messageSid,
+          p_from_phone: m.fromPhone,
+          p_to_phone: m.toPhone,
+          p_body: m.body,
+          p_keyword: m.keyword,
+          p_lead_id: m.leadId,
+        }),
         "record inbound message",
       );
-      return (rows?.length ?? 0) > 0;
-    },
-
-    async addOptOut(tenantId, phone) {
-      data(
-        await db
-          .from("opt_outs")
-          .upsert(
-            { tenant_id: tenantId, phone, source: "inbound_stop" },
-            { onConflict: "tenant_id,phone", ignoreDuplicates: true },
-          ),
-        "add opt-out",
-      );
-    },
-
-    async removeOptOut(tenantId, phone) {
-      data(
-        await db.from("opt_outs").delete().eq("tenant_id", tenantId).eq("phone", phone),
-        "remove opt-out",
-      );
+      return isNew === true;
     },
 
     async findLatestLeadId(tenantId, phone) {

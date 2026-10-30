@@ -80,11 +80,16 @@ export function renderTextbackFailedEmail(
   };
 }
 
-// Customer text is untrusted: control characters are stripped and it's kept
-// short. The email is plain text, so nothing in it can render as markup.
+// Customer text is untrusted. Invisible and reordering characters are removed,
+// Unicode line separators become real line breaks (so every line stays quoted),
+// and it's capped by characters, never splitting an emoji. The email is plain
+// text, so nothing in it can render as markup.
+const STRIP = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+
 function quoteCustomerText(body: string): string {
-  const cleaned = body.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "").trim();
-  const short = cleaned.length > 1000 ? `${cleaned.slice(0, 1000)}...` : cleaned;
+  const cleaned = body.replace(/\r\n?|[\u2028\u2029\u0085]/g, "\n").replace(STRIP, "").trim();
+  const chars = Array.from(cleaned);
+  const short = chars.length > 1000 ? `${chars.slice(0, 1000).join("")}...` : cleaned;
   return short
     .split("\n")
     .map((line) => `> ${line}`)
@@ -93,7 +98,7 @@ function quoteCustomerText(body: string): string {
 
 export function renderCustomerReplyEmail(
   config: TenantConfig,
-  reply: { callerPhone: string; body: string; numMedia: number; receivedAt: Date },
+  reply: { callerPhone: string; body: string; numMedia: number; receivedAt: Date; optedOut?: boolean },
 ): { subject: string; body: string } {
   const caller = formatPhone(reply.callerPhone);
   const lines = [`${caller} texted ${config.businessName} at ${formatTime(reply.receivedAt, config.timezone)}:`, ""];
@@ -101,6 +106,11 @@ export function renderCustomerReplyEmail(
   if (reply.numMedia > 0) {
     lines.push(`(${reply.numMedia} photo${reply.numMedia === 1 ? "" : "s"} attached; view in Twilio)`);
   }
-  lines.push("", `Call or text them: tel:${reply.callerPhone}`);
+  if (reply.optedOut) {
+    lines.push("", "This message opted them out of texts. You can still call them.");
+    lines.push("", `Call them: tel:${reply.callerPhone}`);
+  } else {
+    lines.push("", `Call or text them: tel:${reply.callerPhone}`);
+  }
   return { subject: `Text from ${caller}`, body: lines.join("\n") };
 }

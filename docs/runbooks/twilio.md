@@ -68,13 +68,16 @@ sent but not recorded.
 
 | Message | What happens |
 | --- | --- |
-| STOP, STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT, OPT OUT, REVOKE | Opt-out recorded before anything else. No reply from us (Twilio confirms). |
-| Plain-language opt-outs ("stop texting me", "remove me from your list", "don't text me") | Treated as STOP. |
-| START, UNSTOP (or Twilio's OptOutType=START) | Opt-out removed. |
-| HELP, INFO | Recorded. Twilio's Advanced Opt-Out sends the help text. |
-| Anything else | Saved to `inbound_messages` and emailed to the owner ("Text from ..."). No reply until the AI conversation lands. |
-| Same message delivered twice | Second one does nothing. |
-| Database down | 500, so Twilio uses the fallback URL; Twilio's own opt-out list still blocks texts to people who sent STOP. |
+| Just STOP / STOPALL / UNSUBSCRIBE (with punctuation, emoji, "please") | Opt-out recorded. Owner isn't emailed. No reply from us (Twilio confirms). |
+| CANCEL, END, QUIT | Opt-out recorded, and the owner is emailed (could mean "cancel my appointment"). |
+| Plain-language opt-outs ("stop texting me", "no more texts", "opt me out", "don't text me, call me") | Opt-out recorded, and the owner is emailed with a note that they're opted out of texts. |
+| START, UNSTOP | Opt-out removed, unless the owner added it by hand. |
+| HELP, INFO | Twilio sends the help text, and the owner is emailed (could be an emergency). |
+| Anything else, including photos | Saved to `inbound_messages` and emailed to the owner ("Text from ..."). No reply until the AI conversation lands. |
+| Same message delivered twice, or replayed | Second one does nothing. An old START can never undo a later STOP. |
+| Database down | 500 and a `sms.error` alert saying whether it was an opt-out. Twilio's Advanced Opt-Out still blocks texts after standard STOP words; a plain-language opt-out in that alert must be added to `opt_outs` by hand. |
+
+Not treated as opt-outs (forwarded to the owner instead): "wrong number", "stop calling me", and non-English words like ALTO, BAJA, cancelar. Check with a lawyer whether any of these must be.
 
 ## Not handled yet
 

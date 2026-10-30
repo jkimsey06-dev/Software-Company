@@ -51,12 +51,13 @@ export const dialStatusParams = inboundCallParams.extend({
   DialCallStatus: z.string().min(1).max(32),
 });
 
-// Messaging webhook. Body can be empty (a photo with no text).
+// Messaging webhook. Body can be empty (a photo with no text). Twilio caps a
+// message at 1600 characters, but emoji count double here, so allow more.
 export const inboundSmsParams = z.object({
   MessageSid: z.string().regex(/^(SM|MM)[0-9a-f]{32}$/),
   From: from,
   To: e164,
-  Body: z.string().max(1600).default(""),
+  Body: z.string().max(5000).default(""),
   NumMedia: z.coerce.number().int().min(0).max(10).default(0),
   // Set by Advanced Opt-Out on keyword messages; unknown values are ignored.
   OptOutType: z.string().max(16).optional(),

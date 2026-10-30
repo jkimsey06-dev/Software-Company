@@ -17,7 +17,9 @@ export interface InboundSmsStore {
   findTenantIdByNumber(phone: string): Promise<string | null>;
   // Throws if the tenant's config is invalid.
   loadTenantConfig(tenantId: string): Promise<TenantConfig>;
-  // Returns false if this MessageSid was already recorded.
+  // Records the message and applies its STOP/START in one transaction. STOP is
+  // applied even for a repeat; START only for a new message. Returns false if
+  // this MessageSid was already recorded.
   recordInbound(message: {
     tenantId: string;
     messageSid: string;
@@ -27,8 +29,6 @@ export interface InboundSmsStore {
     keyword: Keyword | null;
     leadId: string | null;
   }): Promise<boolean>;
-  addOptOut(tenantId: string, phone: string): Promise<void>;
-  removeOptOut(tenantId: string, phone: string): Promise<void>;
   findLatestLeadId(tenantId: string, phone: string): Promise<string | null>;
 }
 
@@ -42,6 +42,8 @@ export type ReplyNotifier = (reply: {
   body: string;
   numMedia: number;
   receivedAt: Date;
+  // The message also opted them out of texts.
+  optedOut: boolean;
 }) => void;
 
 export interface SmsDeps {

@@ -3,6 +3,7 @@ import { errorLabel } from "../missed-call/types";
 import { inboundSmsParams, readVerifiedTwilioForm } from "../missed-call/twilio-request";
 import type { OpsAlert } from "../notifications/types";
 import { handleInboundSms } from "./handle-sms";
+import { classifyKeyword } from "./keywords";
 import type { SmsDeps } from "./types";
 
 export interface SmsRouteDeps extends SmsDeps {
@@ -45,12 +46,15 @@ export function smsRoute(getDeps: () => SmsRouteDeps) {
         ),
       );
     } catch (err) {
-      // 500 so Twilio can use the number's fallback URL; a STOP that failed to
-      // record is still enforced by Twilio's Advanced Opt-Out.
+      // 500, and the operator is told. Twilio's Advanced Opt-Out still blocks
+      // texts to anyone who sent a standard STOP keyword.
+      // Say whether it was an opt-out: Twilio blocks its standard keywords on
+      // its own, but a plain-language one must be added by hand from its logs.
       const error = errorLabel(err);
-      deps.log("sms.error", { messageSid: p.MessageSid, error });
+      const keyword = classifyKeyword(p.Body, p.OptOutType).keyword ?? "none";
+      deps.log("sms.error", { messageSid: p.MessageSid, keyword, error });
       const alert = deps.opsAlert;
-      if (alert) deps.schedule?.(() => alert("sms.error", { messageSid: p.MessageSid, error }));
+      if (alert) deps.schedule?.(() => alert("sms.error", { messageSid: p.MessageSid, keyword, error }));
       return new Response("Server Error", { status: 500 });
     }
   };

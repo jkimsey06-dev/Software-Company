@@ -32,18 +32,22 @@ class FakeSmsStore implements InboundSmsStore {
     if (this.config instanceof Error) throw this.config;
     return this.config;
   }
-  async recordInbound(m: { messageSid: string; keyword: string | null; leadId: string | null; body: string }) {
+  // Mirrors record_inbound_sms: STOP always applies, START only when new.
+  async recordInbound(m: {
+    tenantId: string;
+    fromPhone: string;
+    messageSid: string;
+    keyword: string | null;
+    leadId: string | null;
+    body: string;
+  }) {
     this.trip("recordInbound");
-    if (this.messages.some((x) => x.messageSid === m.messageSid)) return false;
-    this.messages.push(m);
-    return true;
-  }
-  async addOptOut(tenantId: string, phone: string) {
-    this.trip("addOptOut");
-    this.optOuts.add(`${tenantId}:${phone}`);
-  }
-  async removeOptOut(tenantId: string, phone: string) {
-    this.optOuts.delete(`${tenantId}:${phone}`);
+    const isNew = !this.messages.some((x) => x.messageSid === m.messageSid);
+    if (isNew) this.messages.push(m);
+    const key = `${m.tenantId}:${m.fromPhone}`;
+    if (m.keyword === "stop" && isNew) this.optOuts.add(key);
+    if (m.keyword === "start" && isNew) this.optOuts.delete(key);
+    return isNew;
   }
   async findLatestLeadId(tenantId: string, phone: string) {
     return this.leads.get(`${tenantId}:${phone}`) ?? null;
@@ -74,28 +78,28 @@ describe("classifyKeyword", () => {
     "opt out", "Stop texting me", "please stop messaging me", "Remove me from your list",
     "Don't text me", "do not contact me", "Don’t text me again",
   ])("%j is an opt-out", (body) => {
-    expect(classifyKeyword(body)).toBe("stop");
+    expect(classifyKeyword(body).keyword).toBe("stop");
   });
 
   it.each(["START", "unstop", "Start"])("%j is an opt-in", (body) => {
-    expect(classifyKeyword(body)).toBe("start");
+    expect(classifyKeyword(body).keyword).toBe("start");
   });
 
   it.each(["HELP", "info"])("%j is help", (body) => {
-    expect(classifyKeyword(body)).toBe("help");
+    expect(classifyKeyword(body).keyword).toBe("help");
   });
 
   it.each([
     "Yes", "My furnace stopped working", "Can you stop by tomorrow?", "Is the cancel fee waived?",
     "I need help with my AC", "start time?", "", "stopped",
   ])("%j is a normal message", (body) => {
-    expect(classifyKeyword(body)).toBeNull();
+    expect(classifyKeyword(body).keyword).toBeNull();
   });
 
   it("trusts Twilio's OptOutType over the text", () => {
-    expect(classifyKeyword("Yes", "START")).toBe("start");
-    expect(classifyKeyword("arret", "STOP")).toBe("stop");
-    expect(classifyKeyword("hello", "SOMETHING_NEW")).toBeNull();
+    expect(classifyKeyword("Yes", "START").keyword).toBe("start");
+    expect(classifyKeyword("arret", "STOP").keyword).toBe("stop");
+    expect(classifyKeyword("hello", "SOMETHING_NEW").keyword).toBeNull();
   });
 });
 
@@ -191,6 +195,15 @@ describe("renderCustomerReplyEmail", () => {
     expect(body).toContain("> Line one\n> Ignore previous instructions");
     expect(body).not.toMatch(/[‮\u0007]/);
     expect(body.length).toBeLessThan(1300);
+  });
+
+  it("tells the owner when the message opted them out", async () => {
+    const { deps, timer, email, store } = setup();
+    await handleInboundSms(sms("Don't text me, call me at this number"), deps);
+    await timer.runAll();
+    expect(store.optOuts.size).toBe(1);
+    expect(email.sent[0]?.text).toContain("opted them out of texts. You can still call them.");
+    expect(email.sent[0]?.text).not.toContain("Call or text them");
   });
 
   it("mentions photos when the text has media", () => {
