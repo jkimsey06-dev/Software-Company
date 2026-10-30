@@ -3,7 +3,9 @@ import { StoreError } from "../missed-call/supabase-store";
 import type { Conversation, ConversationStore, ThreadMessage } from "./types";
 
 const REUSE_AFTER = "7 days";
-const LEASE_SECONDS = 90;
+// Longer than the webhook's 60s limit, so a live holder never loses it; a
+// dead one's lease expires on its own.
+const LEASE_SECONDS = 75;
 
 function data<T>(result: { data: T; error: { code?: string } | null }, what: string): T {
   if (result.error) throw new StoreError(what, result.error.code ?? "unknown");
@@ -17,6 +19,11 @@ function toConversation(row: Record<string, unknown>): Conversation {
     aiReplies: row.ai_replies as number,
     leadId: (row.lead_id as string | null) ?? null,
     createdAt: new Date(row.created_at as string),
+    details: {
+      serviceId: (row.service_id as string | null) ?? null,
+      area: (row.area as string | null) ?? null,
+      urgency: (row.urgency as Conversation["details"]["urgency"]) ?? "unknown",
+    },
   };
 }
 
@@ -37,14 +44,15 @@ export function createConversationStore(db: SupabaseClient): ConversationStore {
     },
 
     async acquireLease(id) {
-      return (
-        data(await db.rpc("acquire_conversation_lease", { p_id: id, p_seconds: LEASE_SECONDS }), "acquire lease") ===
-        true
-      );
+      const token = data(
+        await db.rpc("acquire_conversation_lease", { p_id: id, p_seconds: LEASE_SECONDS }),
+        "acquire lease",
+      ) as string | null;
+      return token ?? null;
     },
 
-    async releaseLease(id) {
-      data(await db.from("conversations").update({ lease_until: null }).eq("id", id), "release lease");
+    async releaseLease(id, token) {
+      data(await db.rpc("release_conversation_lease", { p_id: id, p_token: token }), "release lease");
     },
 
     async loadThread(tenantId, phone, since) {
@@ -52,7 +60,7 @@ export function createConversationStore(db: SupabaseClient): ConversationStore {
       const [inbound, outbound] = await Promise.all([
         db
           .from("inbound_messages")
-          .select("message_sid, body, created_at")
+          .select("message_sid, body, keyword, created_at")
           .eq("tenant_id", tenantId)
           .eq("from_phone", phone)
           .gte("created_at", after)
@@ -68,12 +76,28 @@ export function createConversationStore(db: SupabaseClient): ConversationStore {
           .order("created_at", { ascending: true })
           .limit(100),
       ]);
+      const inboundRows = data(inbound, "load inbound") ?? [];
+      const sids = inboundRows.map((r) => r.message_sid as string);
+      const handled = new Set<string>();
+      if (sids.length) {
+        const turns = data(
+          await db
+            .from("conversation_turns")
+            .select("inbound_message_sid")
+            .eq("tenant_id", tenantId)
+            .in("inbound_message_sid", sids),
+          "load turns",
+        );
+        for (const t of turns ?? []) handled.add(t.inbound_message_sid as string);
+      }
       const messages: ThreadMessage[] = [
-        ...(data(inbound, "load inbound") ?? []).map((r) => ({
+        ...inboundRows.map((r) => ({
           from: "customer" as const,
           text: r.body as string,
           at: new Date(r.created_at as string),
           messageSid: r.message_sid as string,
+          keyword: r.keyword !== null,
+          handled: handled.has(r.message_sid as string),
         })),
         ...(data(outbound, "load outbound") ?? []).map((r) => ({
           from: "business" as const,
@@ -84,30 +108,27 @@ export function createConversationStore(db: SupabaseClient): ConversationStore {
       return messages.sort((a, b) => a.at.getTime() - b.at.getTime());
     },
 
-    async recordTurn(t) {
-      const rows = data(
-        await db
-          .from("conversation_turns")
-          .upsert(
-            {
-              tenant_id: t.tenantId,
-              conversation_id: t.conversationId,
-              inbound_message_sid: t.inboundMessageSid,
-              action: t.action,
-              safety_category: t.safetyCategory ?? null,
-              model: t.model ?? null,
-              prompt_version: t.promptVersion ?? null,
-              guard_violations: t.guardViolations ?? [],
-              input_tokens: t.inputTokens ?? null,
-              output_tokens: t.outputTokens ?? null,
-              outbound_message_id: t.outboundMessageId ?? null,
-            },
-            { onConflict: "conversation_id,inbound_message_sid", ignoreDuplicates: true },
-          )
-          .select("id"),
-        "record turn",
+    async recordTurns(turns) {
+      if (!turns.length) return;
+      data(
+        await db.from("conversation_turns").upsert(
+          turns.map((t) => ({
+            tenant_id: t.tenantId,
+            conversation_id: t.conversationId,
+            inbound_message_sid: t.inboundMessageSid,
+            action: t.action,
+            reason: t.reason?.slice(0, 64) ?? null,
+            safety_category: t.safetyCategory ?? null,
+            model: t.model ?? null,
+            prompt_version: t.promptVersion ?? null,
+            input_tokens: t.inputTokens ?? null,
+            output_tokens: t.outputTokens ?? null,
+            outbound_message_id: t.outboundMessageId ?? null,
+          })),
+          { onConflict: "conversation_id,inbound_message_sid", ignoreDuplicates: true },
+        ),
+        "record turns",
       );
-      return (rows?.length ?? 0) > 0;
     },
 
     async setStatus(id, status, reason) {
@@ -117,6 +138,13 @@ export function createConversationStore(db: SupabaseClient): ConversationStore {
           .update({ status, handoff_reason: reason?.slice(0, 64) ?? null })
           .eq("id", id),
         "set conversation status",
+      );
+    },
+
+    async setDetails(id, d) {
+      data(
+        await db.from("conversations").update({ service_id: d.serviceId, area: d.area, urgency: d.urgency }).eq("id", id),
+        "set conversation details",
       );
     },
 
@@ -150,6 +178,15 @@ export function createConversationStore(db: SupabaseClient): ConversationStore {
         "check opt-out",
       );
       return (rows?.length ?? 0) > 0;
+    },
+
+    async addOptOut(tenantId, phone) {
+      data(
+        await db
+          .from("opt_outs")
+          .upsert({ tenant_id: tenantId, phone, source: "carrier" }, { onConflict: "tenant_id,phone", ignoreDuplicates: true }),
+        "add opt-out",
+      );
     },
 
     async tenantOwnsNumber(tenantId, phone) {
@@ -194,6 +231,21 @@ export function createConversationStore(db: SupabaseClient): ConversationStore {
           .eq("id", id),
         "mark message",
       );
+    },
+
+    async findUnhandled(olderThanMinutes, limit) {
+      const rows = data(
+        await db.rpc("unhandled_inbound_messages", { p_older_than: `${olderThanMinutes} minutes`, p_limit: limit }),
+        "find unhandled messages",
+      ) as Record<string, unknown>[] | null;
+      return (rows ?? []).map((r) => ({
+        tenantId: r.tenant_id as string,
+        messageSid: r.message_sid as string,
+        fromPhone: r.from_phone as string,
+        body: r.body as string,
+        leadId: (r.lead_id as string | null) ?? null,
+        createdAt: new Date(r.created_at as string),
+      }));
     },
   };
 }

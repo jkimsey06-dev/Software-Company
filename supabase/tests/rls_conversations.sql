@@ -30,6 +30,9 @@ declare
   first_id uuid;
   again_id uuid;
   next_id uuid;
+  tok uuid;
+  tok2 uuid;
+  n int;
 begin
   select id into first_id from public.start_conversation(t, '+14235552001', '20000000-0000-0000-0000-0000000000c9', interval '7 days');
   select id into again_id from public.start_conversation(t, '+14235552001', null, interval '7 days');
@@ -56,18 +59,28 @@ begin
     null;
   end;
 
-  -- Leases: exactly one holder until released or expired.
-  if not public.acquire_conversation_lease(next_id, 60) then raise exception 'FAIL: first lease refused'; end if;
-  if public.acquire_conversation_lease(next_id, 60) then raise exception 'FAIL: lease taken twice'; end if;
+  -- Leases: exactly one holder until released or expired; only the holder releases.
+  tok := public.acquire_conversation_lease(next_id, 60);
+  if tok is null then raise exception 'FAIL: first lease refused'; end if;
+  if public.acquire_conversation_lease(next_id, 60) is not null then raise exception 'FAIL: lease taken twice'; end if;
+  perform public.release_conversation_lease(next_id, gen_random_uuid());
+  if public.acquire_conversation_lease(next_id, 60) is not null then raise exception 'FAIL: a stranger released the lease'; end if;
+  perform public.release_conversation_lease(next_id, tok);
+  tok := public.acquire_conversation_lease(next_id, 60);
+  if tok is null then raise exception 'FAIL: released lease not retaken'; end if;
   update public.conversations set lease_until = now() - interval '1 second' where id = next_id;
-  if not public.acquire_conversation_lease(next_id, 60) then raise exception 'FAIL: expired lease not retaken'; end if;
+  tok2 := public.acquire_conversation_lease(next_id, 60);
+  if tok2 is null then raise exception 'FAIL: expired lease not retaken'; end if;
+  -- The old holder's late release doesn't free the new holder's lease.
+  perform public.release_conversation_lease(next_id, tok);
+  if public.acquire_conversation_lease(next_id, 60) is not null then raise exception 'FAIL: stale holder released a new lease'; end if;
 
   -- One turn per inbound message.
   insert into public.conversation_turns (tenant_id, conversation_id, inbound_message_sid, action)
-  values (t, next_id, 'SM' || repeat('1', 32), 'ai_reply');
+  values (t, next_id, 'SM' || repeat('c', 31) || '1', 'ask');
   begin
     insert into public.conversation_turns (tenant_id, conversation_id, inbound_message_sid, action)
-    values (t, next_id, 'SM' || repeat('1', 32), 'ai_reply');
+    values (t, next_id, 'SM' || repeat('c', 31) || '1', 'ask');
     raise exception 'FAIL: two turns for one inbound message';
   exception when unique_violation then
     null;
@@ -77,7 +90,7 @@ begin
   -- point at another tenant's lead.
   begin
     insert into public.conversation_turns (tenant_id, conversation_id, inbound_message_sid, action)
-    values ('10000000-0000-0000-0000-0000000000d9', next_id, 'SM' || repeat('2', 32), 'ai_reply');
+    values ('10000000-0000-0000-0000-0000000000d9', next_id, 'SM' || repeat('c', 31) || '2', 'ask');
     raise exception 'FAIL: turn linked to another tenant''s conversation';
   exception when foreign_key_violation then
     null;
@@ -91,12 +104,27 @@ begin
   end;
   begin
     insert into public.conversation_turns (tenant_id, conversation_id, inbound_message_sid, action)
-    values (t, next_id, 'SM' || repeat('3', 32), 'whatever');
+    values (t, next_id, 'SM' || repeat('c', 31) || '3', 'whatever');
     raise exception 'FAIL: unknown action accepted';
   exception when check_violation then
     null;
   end;
-  raise notice 'ok - one conversation per phone, one lease holder, one turn per message, tenant-bound';
+
+  -- Unhandled-message sweep: only plain texts with no turn and no owner email.
+  insert into public.inbound_messages (tenant_id, message_sid, from_phone, to_phone, body, keyword, created_at) values
+    (t, 'SM' || repeat('c', 31) || '1', '+14235552001', '+14235552000', 'handled by AI', null, now() - interval '10 minutes'),
+    (t, 'SM' || repeat('c', 31) || '4', '+14235552001', '+14235552000', 'lost mid-turn', null, now() - interval '10 minutes'),
+    (t, 'SM' || repeat('c', 31) || '5', '+14235552001', '+14235552000', 'STOP', 'stop', now() - interval '10 minutes'),
+    (t, 'SM' || repeat('c', 31) || '6', '+14235552001', '+14235552000', 'forwarded', null, now() - interval '10 minutes'),
+    (t, 'SM' || repeat('c', 31) || '7', '+14235552001', '+14235552000', 'just arrived', null, now());
+  insert into public.notifications (tenant_id, kind, idempotency_key, recipient_email, subject, body, status)
+  values (t, 'new_lead', 'customer-reply:SM' || repeat('c', 31) || '6', 'owner@example.com', 'S', 'B', 'sent');
+  select count(*) into n from public.unhandled_inbound_messages(interval '3 minutes', 10)
+  where message_sid = 'SM' || repeat('c', 31) || '4';
+  if n <> 1 then raise exception 'FAIL: lost message not found by the sweep'; end if;
+  select count(*) into n from public.unhandled_inbound_messages(interval '3 minutes', 10);
+  if n <> 1 then raise exception 'FAIL: sweep returned handled, keyword, forwarded or too-recent messages (%)', n; end if;
+  raise notice 'ok - one conversation per phone, one lease holder, one turn per message, tenant-bound, sweep finds only lost messages';
 end;
 $$;
 
@@ -120,7 +148,9 @@ begin
     'delete from public.conversation_turns',
     'insert into public.conversations (tenant_id, customer_phone) values (''10000000-0000-0000-0000-0000000000c9'', ''+14235552999'')',
     'select * from public.start_conversation(''10000000-0000-0000-0000-0000000000c9'', ''+14235552998'', null, interval ''1 day'')',
-    'select public.acquire_conversation_lease(gen_random_uuid(), 60)'
+    'select public.acquire_conversation_lease(gen_random_uuid(), 60)',
+    'select public.release_conversation_lease(gen_random_uuid(), gen_random_uuid())',
+    'select * from public.unhandled_inbound_messages(interval ''1 minute'', 10)'
   ] loop
     begin
       execute stmt;

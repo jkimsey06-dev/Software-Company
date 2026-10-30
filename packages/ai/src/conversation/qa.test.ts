@@ -1,8 +1,7 @@
-// QA: phrasings and replies that try to slip past emergency.ts and guard.ts.
-// Tests that fail document a gap; see the QA report for the product call.
+// QA: phrasings that try to slip past emergency.ts and asksIfAi. The reply
+// guard was removed: every text sent is now a fixed template.
 import { describe, expect, it } from "vitest";
 import { asksIfAi, looksLikeEmergency } from "./emergency";
-import { checkReply } from "./guard";
 
 describe("QA emergency: real emergencies the word list misses", () => {
   it.each([
@@ -49,41 +48,5 @@ describe("QA asksIfAi", () => {
   );
   it("'are you real busy this week?' is not asking if it's an AI", () => {
     expect(asksIfAi("are you real busy this week?")).toBe(false);
-  });
-});
-
-describe("QA guard: promises that get through", () => {
-  it.each([
-    ["spelled-out price", "A service call usually runs about eighty nine dollars."],
-    ["hundred", "Most repairs are under two hundred."],
-    ["tmrw", "A tech can come out tmrw morning."],
-    ["weekday", "We can have someone out first thing Monday."],
-    ["be out", "Our tech can be out this afternoon."],
-    ["by 3", "We'll have someone there by 3."],
-    ["openings (plural)", "We have openings Monday and Tuesday."],
-    ["slots (plural)", "We have slots open this week."],
-    ["schedule", "I can get you on the schedule for Thursday."],
-    ["claims human", "This is Sarah from the office, happy to help."],
-    ["claims human 2", "Nope, real human here!"],
-    ["link spelled", "Book at example dot com."],
-    ["price no symbol", "Diagnostic fee is 89."],
-  ])("%s: %j is blocked", (_label, text) => {
-    expect(checkReply(text).ok).toBe(false);
-  });
-});
-
-describe("QA guard: legitimate questions wrongly blocked", () => {
-  // Every block ends the AI conversation (fixed holding text + handoff).
-  it.each([
-    "Is it a gas or electric furnace?",
-    "What's the ZIP code for the job?",
-    "Feel free to send a photo of the unit.",
-    "Is the outdoor spigot a frost-free one?",
-    "Is it 100% out or just weak?",
-    "Sorry you're dealing with that. Is water still running?",
-    "Is it the upstairs or downstairs unit?",
-    "Sorry, we deal with a lot of these. Which room is it in?",
-  ])("%j is allowed", (text) => {
-    expect(checkReply(text)).toEqual({ ok: true, violations: [] });
   });
 });

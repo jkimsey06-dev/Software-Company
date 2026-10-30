@@ -1,4 +1,4 @@
-import type { LeadDetails } from "@sc/ai";
+import { inServiceArea, type LeadDetails } from "@sc/ai";
 import type { TenantConfig } from "@sc/shared";
 
 export type TextbackOutcome =
@@ -127,11 +127,15 @@ const REASONS: Record<string, string> = {
   wrong_number: "They may have the wrong number.",
   spam: "It looks like spam.",
   turn_limit: "The conversation went on longer than the assistant handles.",
-  reply_blocked: "The assistant's reply didn't pass our safety checks, so we sent a holding message.",
+  out_of_area: "They may be outside your service area.",
+  unlisted_service: "They need something that isn't on your services list.",
+  send_failed: "Our last text to them didn't go through.",
+  opted_out: "They opted out of texts, so we stopped texting. You can still call them.",
 };
 
 function reasonLine(reason: string): string {
   if (reason.startsWith("classifier_") || reason.startsWith("reply_")) {
+    // reply_<reason> is the understanding step.
     return REASONS[reason] ?? "The assistant was unavailable, so we sent a holding message.";
   }
   return REASONS[reason] ?? "";
@@ -164,7 +168,7 @@ export function renderConversationUpdateEmail(
   const d = update.details;
   if (d) {
     const service = config.services.find((s) => s.id === d.serviceId)?.name;
-    lines.push("", `Service: ${service ?? "not given"}`, `Area: ${d.area ?? "not given"}${d.inServiceArea === false ? " (may be outside your area)" : ""}`, `Urgency: ${d.urgency}`);
+    lines.push("", `Service: ${service ?? "not given"}`, `Area: ${d.area ?? "not given"}${inServiceArea(config, d.area) === false ? " (may be outside your area)" : ""}`, `Urgency: ${d.urgency}`);
   }
   if (update.thread.length) {
     lines.push("", "Conversation:");
@@ -176,12 +180,8 @@ export function renderConversationUpdateEmail(
   return { subject, body: lines.join("\n").slice(0, 4900) };
 }
 
-// Short text to the owner's phone. Customer text is cleaned and cut short.
-export function renderOwnerEmergencySms(
-  config: TenantConfig,
-  alert: { callerPhone: string; latest: string },
-): string {
-  const said = Array.from(alert.latest.replace(/\r\n?|[\u2028\u2029\u0085]/g, " ").replace(STRIP, "").trim());
-  const quote = said.length > 120 ? `${said.slice(0, 120).join("")}...` : said.join("");
-  return `EMERGENCY text to ${config.businessName} from ${formatPhone(alert.callerPhone)}: "${quote}" We told them to call 911 if in danger. Call them now: ${alert.callerPhone}`;
+// Short text to the owner's phone. Never includes the customer's words: it's
+// sent under the client's A2P campaign, and the details are in the email.
+export function renderOwnerEmergencySms(config: TenantConfig, alert: { callerPhone: string }): string {
+  return `EMERGENCY: ${formatPhone(alert.callerPhone)} texted ${config.businessName} about a possible emergency. We told them to call 911 if anyone is in danger. Call them now: ${alert.callerPhone}. Details are in your email.`;
 }

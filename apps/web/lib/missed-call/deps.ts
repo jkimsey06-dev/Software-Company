@@ -5,6 +5,8 @@ import { createOpsAlert } from "../notifications/ops-alert";
 import { createClaudeConversationModel } from "@sc/ai";
 import { handleCustomerMessage } from "../conversation/run-turn";
 import { createConversationStore } from "../conversation/supabase-store";
+import { forwardUnhandledMessages } from "../conversation/sweep";
+import type { NotificationDeps as SweepDeps } from "../notifications/types";
 import { createInboundSmsStore } from "../inbound-sms/supabase-store";
 import type { Converse } from "../inbound-sms/types";
 import { errorLabel } from "./types";
@@ -81,36 +83,35 @@ export function getSmsRouteDeps(): SmsRouteDeps {
     const notifyReply = notifications ? createReplyNotifier(notifications, schedule) : undefined;
     const opsAlert = notifications?.opsAlert ?? createOpsAlert(null, undefined, log);
 
-    // The AI conversation runs only when ANTHROPIC_API_KEY is set; otherwise
-    // every customer text goes to the owner, as before.
-    const converse: Converse | undefined = process.env.ANTHROPIC_API_KEY
-      ? (message) =>
-          schedule(async () => {
-            let handled = false;
-            let config;
-            try {
-              config = await smsStore.loadTenantConfig(message.tenantId);
-              handled = await handleCustomerMessage(
-                { ...message, config },
-                {
-                  store: createConversationStore(db),
-                  sender: createTwilioSender(env.twilioAccountSid, env.twilioAuthToken),
-                  modelFor: (c) => createClaudeConversationModel(c),
-                  notifications,
-                  log,
-                },
-              );
-            } catch (err) {
-              const error = errorLabel(err);
-              log("conversation.error", { tenantId: message.tenantId, messageSid: message.messageSid, error });
-              await opsAlert("conversation.error", { tenantId: message.tenantId, messageSid: message.messageSid, error });
-            }
-            // The AI didn't take it (or failed): the owner sees the text.
-            if (!handled && config && notifyReply) {
-              notifyReply({ ...message, config, callerPhone: message.customerPhone, optedOut: false });
-            }
-          })
-      : undefined;
+    // Emergencies are always handled (no model needed). The AI conversation
+    // runs only when ANTHROPIC_API_KEY is set; otherwise texts go to the owner.
+    const hasModel = Boolean(process.env.ANTHROPIC_API_KEY);
+    const converse: Converse = (message) =>
+      schedule(async () => {
+        let handled = false;
+        let config;
+        try {
+          config = await smsStore.loadTenantConfig(message.tenantId);
+          handled = await handleCustomerMessage(
+            { ...message, config },
+            {
+              store: createConversationStore(db),
+              sender: createTwilioSender(env.twilioAccountSid, env.twilioAuthToken),
+              modelFor: (c) => (hasModel ? createClaudeConversationModel(c) : null),
+              notifications,
+              log,
+            },
+          );
+        } catch (err) {
+          const error = errorLabel(err);
+          log("conversation.error", { tenantId: message.tenantId, messageSid: message.messageSid, error });
+          await opsAlert("conversation.error", { tenantId: message.tenantId, messageSid: message.messageSid, error });
+        }
+        // Not handled (or failed): the owner sees the text.
+        if (!handled && config && notifyReply) {
+          notifyReply({ ...message, config, callerPhone: message.customerPhone, optedOut: false });
+        }
+      });
 
     cachedSms = {
       store: smsStore,
@@ -124,4 +125,12 @@ export function getSmsRouteDeps(): SmsRouteDeps {
     };
   }
   return cachedSms;
+}
+
+// For the cron: forward customer texts that a killed worker left unhandled.
+export function getSweep(): ((deps: SweepDeps) => Promise<number>) | null {
+  const env = readTwilioWebhookEnv();
+  const db = createServiceClient(env.supabaseUrl, env.supabaseServiceRoleKey);
+  const smsStore = createInboundSmsStore(db, log);
+  return (deps) => forwardUnhandledMessages(createConversationStore(db), (id) => smsStore.loadTenantConfig(id), deps);
 }

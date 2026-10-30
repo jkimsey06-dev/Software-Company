@@ -16,11 +16,17 @@ create table public.conversations (
   lead_id uuid,
   customer_phone text not null check (customer_phone ~ '^\+[1-9][0-9]{7,14}$'),
   status public.conversation_status not null default 'active',
-  -- Model-written replies sent so far; capped by the app.
+  -- Questions we've sent so far; capped by the app.
   ai_replies int not null default 0 check (ai_replies >= 0),
   handoff_reason text check (length(handoff_reason) <= 64),
+  -- What we've learned so far, carried from turn to turn.
+  service_id text check (length(service_id) <= 63),
+  area text check (length(area) <= 60),
+  urgency public.lead_urgency not null default 'unknown',
   -- Held by the one worker processing this conversation; expires on its own.
+  -- Only the holder (same token) can release it.
   lease_until timestamptz,
+  lease_token uuid,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (tenant_id, id),
@@ -47,12 +53,13 @@ create table public.conversation_turns (
   conversation_id uuid not null,
   inbound_message_sid text not null check (inbound_message_sid ~ '^(SM|MM)[0-9a-f]{32}$'),
   action text not null check (action in (
-    'ai_reply', 'emergency', 'handoff', 'complete', 'fallback', 'ai_disclosure', 'turn_limit', 'skipped'
+    'ask', 'complete', 'out_of_area', 'unlisted_service', 'emergency', 'handoff', 'fallback',
+    'turn_limit', 'skipped', 'merged', 'send_failed', 'opted_out', 'timed_out'
   )),
+  reason text check (length(reason) <= 64),
   safety_category text check (length(safety_category) <= 32),
   model text check (length(model) <= 64),
   prompt_version text check (length(prompt_version) <= 100),
-  guard_violations text[] not null default '{}',
   input_tokens int check (input_tokens >= 0),
   output_tokens int check (output_tokens >= 0),
   outbound_message_id uuid,
@@ -122,23 +129,66 @@ begin
 end;
 $$;
 
--- Takes the conversation for processing. True for exactly one caller until the
--- lease is released or expires.
+-- Takes the conversation for processing. Returns a token for exactly one
+-- caller until the lease is released or expires; null for everyone else.
 create function public.acquire_conversation_lease(p_id uuid, p_seconds int)
-returns boolean
+returns uuid
 language sql
 set search_path = ''
 as $$
-  with taken as (
-    update public.conversations
-    set lease_until = now() + make_interval(secs => least(greatest(p_seconds, 1), 300))
-    where id = p_id and (lease_until is null or lease_until < now())
-    returning 1
-  )
-  select exists (select 1 from taken);
+  update public.conversations
+  set lease_until = now() + make_interval(secs => least(greatest(p_seconds, 1), 300)),
+      lease_token = gen_random_uuid()
+  where id = p_id and (lease_until is null or lease_until < now())
+  returning lease_token;
+$$;
+
+-- Releases the lease only if the caller still holds it.
+create function public.release_conversation_lease(p_id uuid, p_token uuid)
+returns void
+language sql
+set search_path = ''
+as $$
+  update public.conversations
+  set lease_until = null, lease_token = null
+  where id = p_id and lease_token = p_token;
+$$;
+
+-- Customer texts from the last day that nobody handled: no conversation turn,
+-- no owner email, and not a keyword. These come from a worker that was killed
+-- mid-turn; the cron forwards them to the owner so nothing is silently lost.
+create function public.unhandled_inbound_messages(p_older_than interval, p_limit int)
+returns table (tenant_id uuid, message_sid text, from_phone text, body text, num_media int, lead_id uuid, created_at timestamptz)
+language sql
+stable
+set search_path = ''
+as $$
+  select m.tenant_id, m.message_sid, m.from_phone, m.body, 0, m.lead_id, m.created_at
+  from public.inbound_messages m
+  where m.created_at > now() - interval '1 day'
+    and m.created_at < now() - p_older_than
+    and m.keyword is null
+    and length(trim(m.body)) > 0
+    and not exists (
+      select 1 from public.conversation_turns t
+      where t.tenant_id = m.tenant_id and t.inbound_message_sid = m.message_sid
+    )
+    and not exists (
+      select 1 from public.notifications n
+      where n.tenant_id = m.tenant_id
+        and n.idempotency_key in ('customer-reply:' || m.message_sid, 'emergency:' || m.message_sid)
+    )
+  order by m.created_at
+  limit least(greatest(p_limit, 1), 100);
 $$;
 
 revoke all on function public.start_conversation(uuid, text, uuid, interval) from public, anon, authenticated;
 revoke all on function public.acquire_conversation_lease(uuid, int) from public, anon, authenticated;
+revoke all on function public.release_conversation_lease(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.unhandled_inbound_messages(interval, int) from public, anon, authenticated;
 grant execute on function public.start_conversation(uuid, text, uuid, interval) to service_role;
 grant execute on function public.acquire_conversation_lease(uuid, int) to service_role;
+grant execute on function public.release_conversation_lease(uuid, uuid) to service_role;
+grant execute on function public.unhandled_inbound_messages(interval, int) to service_role;
+
+create index conversation_turns_sid_idx on public.conversation_turns (tenant_id, inbound_message_sid);

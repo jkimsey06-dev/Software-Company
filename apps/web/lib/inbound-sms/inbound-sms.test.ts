@@ -205,6 +205,13 @@ describe("routing to the AI conversation", () => {
     expect(email.sent).toHaveLength(1);
   });
 
+  it("an opt-out that describes an emergency still records the opt-out and gets emergency handling", async () => {
+    const { deps, conversed, store } = withConverse();
+    await handleInboundSms(sms("Stop texting me, I smell gas"), deps);
+    expect(store.optOuts.size).toBe(1);
+    expect(conversed).toEqual(["Stop texting me, I smell gas"]);
+  });
+
   it("sends a photo with no text to the owner, not the AI", async () => {
     const { deps, conversed, timer, email } = withConverse();
     await handleInboundSms(sms("", { messageSid: `MM${"e".repeat(32)}`, numMedia: 1 }), deps);

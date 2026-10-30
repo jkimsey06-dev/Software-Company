@@ -3,56 +3,81 @@
 After the missed-call text-back, the customer's replies go to an AI assistant
 that learns the service, area and urgency, then hands the lead to the owner.
 
-## When it runs
+**The AI never writes what we send.** It only reads the customer's texts and
+fills structured fields. Every text we send is a fixed template built from the
+tenant's config (`packages/ai/src/templates/conversation.v1.ts`), so it can't
+promise a price, time, warranty or availability, or be talked into saying
+anything else.
 
-All of these must be true, otherwise the customer's text is emailed to the owner:
+## Emergencies (always, no AI needed)
+
+Any customer text that matches the emergency word list
+(`packages/ai/src/conversation/emergency.ts`): gas/propane smell, smoke, fire,
+sparks, CO alarm, flooding, water through a ceiling or near electrical, power
+line down, someone fainted, no heat/AC with a baby or elderly person, and some
+Spanish phrases. This runs in every state: before or after a handoff, with or
+without an AI key, even mixed with STOP.
+
+- Customer: fixed text pointing to 911, if texting them is allowed (A2P approved,
+  not opted out).
+- Owner: text from the tenant's number ("EMERGENCY: (423) 555-0111 texted ...",
+  no customer words), plus an "EMERGENCY" email with the conversation.
+- The conversation is handed off.
+
+The AI's safety check catches emergencies the word list misses.
+
+## When the AI runs
+
+Otherwise the customer's text is emailed to the owner. All must be true:
 
 - `ANTHROPIC_API_KEY` is set
 - The tenant can send texts (A2P approved, campaign id, `fromNumber` owned by the tenant)
-- The customer is a US/Canada number, isn't one of the tenant's own numbers, and hasn't opted out
-- The message has words and isn't a keyword (STOP, HELP, CANCEL...) or an opt-out phrase
-- The customer's conversation is active. After a handoff or completion, a person is in
-  charge for 7 days and the AI stays out.
+- US/Canada number, not one of the tenant's own numbers, not opted out
+- The text has words and isn't a keyword (STOP, HELP, CANCEL...)
+- The conversation is active. After a handoff or completion, a person is in charge for 7 days.
 
-## Each message, in order
+## Each turn
 
-1. **Emergency words** (no AI): gas smell, smoke, fire, sparks, CO alarm, flooding, water
-   near electrical, no heat/AC with a baby or elderly person... Fixed text pointing to 911,
-   owner texted and emailed, conversation handed off.
-2. **"Are you a bot?"** Fixed honest answer; conversation continues.
-3. **Reply limit**: after 6 AI replies, fixed handoff text.
-4. **Safety check** (`claude-haiku-5-5`, `safety-classifier@v1`): emergency, upset,
-   wants a person, wrong number, spam, or normal. Anything but normal stops the AI.
-5. **Reply** (`claude-sonnet-5-5`, `missed-call-qualifier@v1`): structured output with the
-   reply text and the details it learned. Only the tenant's services, area and approved FAQ
-   are in the prompt; customer text is passed as escaped data.
-6. **Reply check** (`packages/ai/src/conversation/guard.ts`): no prices, discounts, free,
-   warranties, clock times, "within N hours", arrival promises, availability, claiming to be
-   human, links, phone numbers, markup, or over 320 characters. A failing reply is never sent:
-   a fixed holding text goes instead and the owner takes over.
-7. When service, area and urgency are all known: fixed "they'll reach out to set up a time"
-   text, conversation completed, owner emailed "Lead ready".
+1. **Safety check** (`claude-haiku-5-5`, `safety-classifier@v1`): emergency → emergency
+   handling; upset or wants a person → fixed handoff; wrong number or spam → no text, owner told.
+2. **Question limit**: after 6 questions, fixed handoff.
+3. **Understanding** (`claude-sonnet-5-5`, `lead-understanding@v1`): service id (from the
+   tenant's list only), area, urgency, FAQ id (from the tenant's FAQ only), whether they
+   asked something else, need a service that isn't listed, or need a person. Details are
+   remembered across turns.
+4. **Decided in code:**
+   - Needs a person / unlisted service → fixed handoff text
+   - Area outside the service area (checked against the tenant's ZIPs and cities) → fixed
+     "may be outside the area" text, handoff
+   - Missing detail → the next fixed question (service, then area, then urgency), optionally
+     after "Yes, I'm an AI assistant..." (once), an approved FAQ answer word for word, or
+     "I'll pass that question to the team"
+   - All known → fixed "they'll reach out to set up a time", owner emailed "Lead ready"
 
-Prices, times and availability are never quoted. Calendar booking comes in a later PR.
+Several texts in a row get one reply. Customer text is passed to the model as escaped
+data inside tags, never as instructions.
 
-## Failure handling
+## Never silent
 
 | Situation | What happens |
 | --- | --- |
-| Claude down, timeout, refusal, bad output | Fixed holding text, owner emailed "Needs you", handed off |
-| Customer texts several times quickly | One reply covering all of them |
-| Same message delivered twice | One reply (key `conversation-reply:<MessageSid>`) |
-| Two messages processed at once | One worker holds the conversation lease; the other's message is picked up before release |
-| Customer replies STOP mid-turn | Checked again right before sending |
-| Owner emergency text fails | Owner still emailed; `conversation.owner_alert_failed` ops alert |
+| Claude down, timeout (15s per call), refusal, bad output | Fixed holding text, owner emailed "Needs you", handoff |
+| Our text is rejected or fails | Owner emailed (our text didn't go through), handoff; Twilio 21610 records an opt-out |
+| Customer replies STOP mid-turn | Nothing sent; owner emailed |
+| Same message delivered twice | One reply (`conversation-reply:<MessageSid>`) |
+| Another worker is busy with this customer | Wait up to 20s, then email the owner this message |
+| Worker killed mid-turn (timeout, crash) | The cron (every 5 min) emails the owner any text with no decision after 3 min; ops alert |
 | Anything else throws | `conversation.error` ops alert, and the text is emailed to the owner |
 
-## Logs and records
+A message counts as answered only when it has a row in `conversation_turns`, never just
+because we texted afterwards. Leases last 75s (longer than the 60s function limit) and can
+only be released by their holder.
 
-- `conversation_turns`: one row per customer message: action, safety category, model,
-  prompt version, reply-check violations, token counts, outbound message id.
-- `outbound_messages.template_version`: `missed-call-qualifier@v1/claude-sonnet-5-5` for AI
-  replies, `conversation-templates@v1` for fixed texts.
+## Records
+
+- `conversation_turns`: one row per customer message: action, reason, safety category,
+  model, prompt version, token counts, outbound message id. Merged messages are `merged`.
+- `conversations`: status, handoff reason, questions asked, and the details learned.
 - App logs carry IDs, actions and categories only, never message text or numbers.
 
 ## Checking the real model

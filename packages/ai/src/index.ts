@@ -8,9 +8,10 @@ export {
   CONVERSATION_TEMPLATES_V1,
   renderFixedMessageV1,
   type FixedMessage,
+  type Question,
 } from "./templates/conversation.v1";
 export { asksIfAi, looksLikeEmergency } from "./conversation/emergency";
-export { MAX_REPLY_CHARS, checkReply } from "./conversation/guard";
+export { cleanArea, inServiceArea } from "./conversation/service-area";
 export {
   CLASSIFIER_MODEL,
   CONVERSATION_MODEL,

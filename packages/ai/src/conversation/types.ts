@@ -16,17 +16,23 @@ export const SAFETY_CATEGORIES = [
 ] as const;
 export type SafetyCategory = (typeof SAFETY_CATEGORIES)[number];
 
-// What the conversation model extracted so far. Null means not known yet.
+// What we know about the job. Null means not known yet.
 export interface LeadDetails {
   serviceId: string | null;
   area: string | null;
-  inServiceArea: boolean | null;
   urgency: LeadUrgency;
 }
 
-export interface ModelReply {
-  reply: string;
+// What the model understood from the customer's latest messages. The model
+// never writes text that is sent; it only fills these fields.
+export interface Understanding {
   details: LeadDetails;
+  // Id of an approved FAQ entry that answers a question the customer asked.
+  faqId: string | null;
+  // They asked something the approved FAQ doesn't answer.
+  askedOtherQuestion: boolean;
+  // They need a service the business doesn't list.
+  unlistedService: boolean;
   needsHuman: boolean;
 }
 
@@ -48,9 +54,9 @@ export class ModelUnavailableError extends Error {
 
 export interface ConversationModel {
   classify(input: { history: Turn[]; latest: string }): Promise<{ category: SafetyCategory; info: ModelCallInfo }>;
-  reply(input: {
+  understand(input: {
     history: Turn[];
     latest: string;
     known: LeadDetails;
-  }): Promise<{ result: ModelReply; info: ModelCallInfo }>;
+  }): Promise<{ result: Understanding; info: ModelCallInfo }>;
 }
