@@ -20,9 +20,12 @@
    campaign is approved. Until then calls are logged and leads saved, but no texts.
    `fromNumber` must also be in `tenant_phone_numbers` for the same tenant, or no
    texts are sent.
-6. Turn on **Advanced Opt-Out** on the client's Messaging Service. Until we handle
-   inbound STOP ourselves (next PR), Twilio's opt-out list is the only record of
-   people who replied STOP, and it is tied to the sending number.
+6. Messaging configuration on the number (or its Messaging Service):
+   **A message comes in**: Webhook, `POST https://<PUBLIC_BASE_URL>/api/twilio/sms`.
+7. Turn on **Advanced Opt-Out** on the client's Messaging Service. Twilio sends the
+   STOP/START/HELP confirmation texts; we never auto-reply to keywords, so the
+   customer gets exactly one confirmation. We also record opt-outs in `opt_outs`
+   ourselves, so they survive a change of sending number.
 
 ## How it behaves
 
@@ -61,7 +64,19 @@ message text. Errors are logged as codes (e.g. `StoreError:23505`), not messages
 `textback.mark_sent_failed` includes the Twilio message SID for a text that was
 sent but not recorded.
 
+## Customer texts
+
+| Message | What happens |
+| --- | --- |
+| STOP, STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT, OPT OUT, REVOKE | Opt-out recorded before anything else. No reply from us (Twilio confirms). |
+| Plain-language opt-outs ("stop texting me", "remove me from your list", "don't text me") | Treated as STOP. |
+| START, UNSTOP (or Twilio's OptOutType=START) | Opt-out removed. |
+| HELP, INFO | Recorded. Twilio's Advanced Opt-Out sends the help text. |
+| Anything else | Saved to `inbound_messages` and emailed to the owner ("Text from ..."). No reply until the AI conversation lands. |
+| Same message delivered twice | Second one does nothing. |
+| Database down | 500, so Twilio uses the fallback URL; Twilio's own opt-out list still blocks texts to people who sent STOP. |
+
 ## Not handled yet
 
 - Owner notifications: see docs/runbooks/notifications.md.
-- Inbound texts, STOP replies and the AI conversation (next PR).
+- The AI conversation that replies to customers (next PR).

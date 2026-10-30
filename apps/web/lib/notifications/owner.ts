@@ -1,7 +1,8 @@
 import type { OwnerNotifier } from "../missed-call/handle-call";
 import { errorLabel } from "../missed-call/types";
 import { sendNotification } from "./dispatch";
-import { renderNewLeadEmail, renderTextbackFailedEmail } from "./templates";
+import type { ReplyNotifier } from "../inbound-sms/types";
+import { renderCustomerReplyEmail, renderNewLeadEmail, renderTextbackFailedEmail } from "./templates";
 import type { NotificationDeps } from "./types";
 
 // Runs work after the webhook has answered Twilio (Next's `after()` in prod).
@@ -61,6 +62,45 @@ export function createOwnerNotifier(deps: NotificationDeps, schedule: Schedule):
         const notificationId = id;
         await sendNotification(notificationId, deps).catch((err) =>
           log("notification.dispatch_error", { notificationId, error: errorLabel(err) }),
+        );
+      }
+    });
+  };
+}
+
+// Forwards a customer's text to the owner, after the response. One email per
+// Twilio message.
+export function createReplyNotifier(deps: NotificationDeps, schedule: Schedule): ReplyNotifier {
+  return (reply) => {
+    const { tenantId, config, leadId, messageSid } = reply;
+    const to = config.escalationContact.email;
+    if (!to) {
+      deps.log("notification.skipped", { tenantId, messageSid, reason: "no_owner_email" });
+      return;
+    }
+    schedule(async () => {
+      let id: string | null;
+      try {
+        const email = renderCustomerReplyEmail(config, reply);
+        id = await deps.store.enqueue({
+          tenantId,
+          kind: "customer_reply",
+          idempotencyKey: `customer-reply:${messageSid}`,
+          leadId,
+          recipientEmail: to,
+          subject: email.subject,
+          body: email.body,
+        });
+      } catch (err) {
+        const error = errorLabel(err);
+        deps.log("notification.enqueue_failed", { tenantId, messageSid, error });
+        await deps.opsAlert("notification.enqueue_failed", { tenantId, messageSid, error });
+        return;
+      }
+      if (id) {
+        const notificationId = id;
+        await sendNotification(notificationId, deps).catch((err) =>
+          deps.log("notification.dispatch_error", { notificationId, error: errorLabel(err) }),
         );
       }
     });

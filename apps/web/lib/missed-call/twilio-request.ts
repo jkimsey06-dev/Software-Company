@@ -50,3 +50,14 @@ export const inboundCallParams = z.object({
 export const dialStatusParams = inboundCallParams.extend({
   DialCallStatus: z.string().min(1).max(32),
 });
+
+// Messaging webhook. Body can be empty (a photo with no text).
+export const inboundSmsParams = z.object({
+  MessageSid: z.string().regex(/^(SM|MM)[0-9a-f]{32}$/),
+  From: from,
+  To: e164,
+  Body: z.string().max(1600).default(""),
+  NumMedia: z.coerce.number().int().min(0).max(10).default(0),
+  // Set by Advanced Opt-Out on keyword messages; unknown values are ignored.
+  OptOutType: z.string().max(16).optional(),
+});
