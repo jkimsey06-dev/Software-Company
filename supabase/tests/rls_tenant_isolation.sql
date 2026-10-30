@@ -65,13 +65,24 @@ begin
     raise exception 'FAIL: public views without security_invoker: %', missing;
   end if;
 
+  -- SECURITY DEFINER bypasses RLS; in the API schema it must not be callable by users.
+  select string_agg(p.oid::regprocedure::text, ', ') into missing
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public' and p.prosecdef
+    and (has_function_privilege('anon', p.oid, 'execute')
+         or has_function_privilege('authenticated', p.oid, 'execute'));
+  if missing is not null then
+    raise exception 'FAIL: SECURITY DEFINER functions callable by API roles: %', missing;
+  end if;
+
   select string_agg(distinct table_name, ', ') into missing
   from information_schema.role_table_grants
   where grantee = 'anon' and table_schema = 'public';
   if missing is not null then
     raise exception 'FAIL: anon has grants on public tables: %', missing;
   end if;
-  raise notice 'ok - every public table has RLS and tenant_id NOT NULL, no unsafe views, no anon grants';
+  raise notice 'ok - every public table has RLS and tenant_id NOT NULL, no unsafe views, no anon grants, no callable security definer functions';
 end;
 $$;
 
