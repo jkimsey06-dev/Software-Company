@@ -41,3 +41,16 @@ grant execute on function auth.uid() to anon, authenticated, service_role;
 alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
 alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
 alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
+
+-- Supabase projects ship this SECURITY DEFINER event-trigger function in public,
+-- executable by API roles. Mirror it so the tests see what the platform has.
+create function public.rls_auto_enable()
+returns event_trigger
+language plpgsql
+security definer
+as $$
+begin
+  null;
+end;
+$$;
+grant execute on function public.rls_auto_enable() to anon, authenticated, service_role;

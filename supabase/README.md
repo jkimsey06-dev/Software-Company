@@ -16,6 +16,21 @@ host other than localhost.
 RLS_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres pnpm test:rls
 ```
 
+## Applying migrations to dev
+
+Migration files are named `<version>_<name>.sql`, where `<version>` must equal the
+version Supabase records in `supabase_migrations.schema_migrations`. If they differ,
+`supabase db push` treats the migration as unapplied and runs it again.
+
+When a migration is applied through the Supabase MCP (`apply_migration`), Supabase
+picks the version at apply time, so name the file after applying:
+
+```sql
+select version, name from supabase_migrations.schema_migrations order by version;
+```
+
+Then run the security and performance advisors and fix anything they report.
+
 ## Rules
 
 - Every table holding client data has `tenant_id uuid not null`. The tests fail if not.
