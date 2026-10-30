@@ -181,6 +181,53 @@ describe("handleInboundSms", () => {
   });
 });
 
+describe("routing to the AI conversation", () => {
+  function withConverse() {
+    const s = setup();
+    const conversed: string[] = [];
+    const deps = { ...s.deps, converse: (m: { body: string }) => void conversed.push(m.body) };
+    return { ...s, deps, conversed };
+  }
+
+  it("sends a plain text to the conversation instead of emailing the owner", async () => {
+    const { deps, conversed, timer, email } = withConverse();
+    await handleInboundSms(sms("My AC is out"), deps);
+    await timer.runAll();
+    expect(conversed).toEqual(["My AC is out"]);
+    expect(email.sent).toHaveLength(0);
+  });
+
+  it.each(["HELP", "Don't text me, call me", "Cancel"])("keeps %j away from the AI and emails the owner", async (body) => {
+    const { deps, conversed, timer, email } = withConverse();
+    await handleInboundSms(sms(body), deps);
+    await timer.runAll();
+    expect(conversed).toHaveLength(0);
+    expect(email.sent).toHaveLength(1);
+  });
+
+  it("an opt-out that describes an emergency still records the opt-out and gets emergency handling", async () => {
+    const { deps, conversed, store } = withConverse();
+    await handleInboundSms(sms("Stop texting me, I smell gas"), deps);
+    expect(store.optOuts.size).toBe(1);
+    expect(conversed).toEqual(["Stop texting me, I smell gas"]);
+  });
+
+  it("sends a photo with no text to the owner, not the AI", async () => {
+    const { deps, conversed, timer, email } = withConverse();
+    await handleInboundSms(sms("", { messageSid: `MM${"e".repeat(32)}`, numMedia: 1 }), deps);
+    await timer.runAll();
+    expect(conversed).toHaveLength(0);
+    expect(email.sent).toHaveLength(1);
+  });
+
+  it("doesn't hand a repeated message to the AI twice", async () => {
+    const { deps, conversed } = withConverse();
+    await handleInboundSms(sms("My AC is out"), deps);
+    await handleInboundSms(sms("My AC is out"), deps);
+    expect(conversed).toHaveLength(1);
+  });
+});
+
 describe("renderCustomerReplyEmail", () => {
   const at = new Date("2026-10-30T18:05:00Z");
 

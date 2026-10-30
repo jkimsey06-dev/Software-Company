@@ -1,6 +1,7 @@
 import { phoneE164 } from "@sc/shared";
 import twilio from "twilio";
 import { errorLabel } from "../missed-call/types";
+import { looksLikeEmergency } from "@sc/ai";
 import { classifyKeyword } from "./keywords";
 import type { InboundSms, SmsDeps } from "./types";
 
@@ -52,7 +53,25 @@ export async function handleInboundSms(msg: InboundSms, deps: SmsDeps): Promise<
   log("sms.received", { ...ctx, keyword: keyword ?? "none", bare, hasLead: leadId !== null });
   if (bare) return noReply();
 
-  // Anything with words in it reaches the owner, until the AI conversation exists.
+  // A plain text with words goes to the conversation. Keywords, opt-outs and
+  // photo-only messages go straight to the owner, unless they describe an
+  // emergency ("STOP texting me, I smell gas"), which always gets the
+  // emergency handling (no text to someone who opted out; the owner is alerted).
+  const emergency = keyword !== "start" && looksLikeEmergency(msg.body);
+  if ((!keyword || emergency) && msg.body.trim() && deps.converse) {
+    deps.converse({
+      tenantId,
+      customerPhone: fromPhone,
+      businessNumber: msg.to,
+      leadId,
+      messageSid: msg.messageSid,
+      body: msg.body,
+      numMedia: msg.numMedia,
+      receivedAt: new Date(),
+    });
+    return noReply();
+  }
+
   if (deps.notifyReply) {
     try {
       const config = await store.loadTenantConfig(tenantId);

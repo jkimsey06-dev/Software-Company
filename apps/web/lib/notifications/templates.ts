@@ -1,3 +1,4 @@
+import { inServiceArea, type LeadDetails } from "@sc/ai";
 import type { TenantConfig } from "@sc/shared";
 
 export type TextbackOutcome =
@@ -113,4 +114,74 @@ export function renderCustomerReplyEmail(
     lines.push("", `Call or text them: tel:${reply.callerPhone}`);
   }
   return { subject: `Text from ${caller}`, body: lines.join("\n") };
+}
+
+export type ConversationOutcome = "complete" | "needs_you" | "emergency";
+
+const REASONS: Record<string, string> = {
+  emergency: "They may have an emergency.",
+  emergency_keywords: "They may have an emergency.",
+  upset: "They seem upset.",
+  wants_human: "They asked to talk to a person.",
+  needs_human: "The assistant couldn't help with this one.",
+  wrong_number: "They may have the wrong number.",
+  spam: "It looks like spam.",
+  turn_limit: "The conversation went on longer than the assistant handles.",
+  out_of_area: "They may be outside your service area.",
+  unlisted_service: "They need something that isn't on your services list.",
+  send_failed: "Our last text to them didn't go through.",
+  opted_out: "They opted out of texts, so we stopped texting. You can still call them.",
+};
+
+function reasonLine(reason: string): string {
+  if (reason.startsWith("classifier_") || reason.startsWith("reply_")) {
+    // reply_<reason> is the understanding step.
+    return REASONS[reason] ?? "The assistant was unavailable, so we sent a holding message.";
+  }
+  return REASONS[reason] ?? "";
+}
+
+export function renderConversationUpdateEmail(
+  config: TenantConfig,
+  update: {
+    callerPhone: string;
+    outcome: ConversationOutcome;
+    reason: string;
+    details?: LeadDetails;
+    thread: { from: "customer" | "business"; text: string }[];
+  },
+): { subject: string; body: string } {
+  const caller = formatPhone(update.callerPhone);
+  const subject = {
+    complete: `Lead ready: ${caller}`,
+    needs_you: `Needs you: ${caller}`,
+    emergency: `EMERGENCY: ${caller}`,
+  }[update.outcome];
+  const lines: string[] = [];
+  if (update.outcome === "emergency") {
+    lines.push(`${caller} may have an emergency. We told them to call 911 if anyone is in danger. Call them now.`);
+  } else if (update.outcome === "complete") {
+    lines.push(`${caller} is ready for a call back. We told them you'll reach out to set up a time.`);
+  } else {
+    lines.push(`${caller} needs you to take over. ${reasonLine(update.reason)}`.trim());
+  }
+  const d = update.details;
+  if (d) {
+    const service = config.services.find((s) => s.id === d.serviceId)?.name;
+    lines.push("", `Service: ${service ?? "not given"}`, `Area (as they wrote it): ${d.area ?? "not given"}${inServiceArea(config, d.area) === false ? " (may be outside your area)" : ""}`, `Urgency: ${d.urgency}`);
+  }
+  if (update.thread.length) {
+    lines.push("", "Conversation:");
+    for (const m of update.thread) {
+      lines.push(m.from === "customer" ? `Customer:\n${quoteCustomerText(m.text)}` : `Us: ${m.text}`);
+    }
+  }
+  lines.push("", `Call them: tel:${update.callerPhone}`);
+  return { subject, body: lines.join("\n").slice(0, 4900) };
+}
+
+// Short text to the owner's phone. Never includes the customer's words: it's
+// sent under the client's A2P campaign, and the details are in the email.
+export function renderOwnerEmergencySms(config: TenantConfig, alert: { callerPhone: string }): string {
+  return `EMERGENCY: ${formatPhone(alert.callerPhone)} texted ${config.businessName} about a possible emergency. We told them to call 911 if anyone is in danger. Call them now: ${alert.callerPhone}. Details are in your email.`;
 }

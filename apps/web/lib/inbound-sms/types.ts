@@ -46,8 +46,22 @@ export type ReplyNotifier = (reply: {
   optedOut: boolean;
 }) => void;
 
+// Hands a customer's text to the AI conversation, after the response. The
+// conversation forwards it to the owner itself if the AI won't handle it.
+export type Converse = (message: {
+  tenantId: string;
+  customerPhone: string;
+  businessNumber: string;
+  leadId: string | null;
+  messageSid: string;
+  body: string;
+  numMedia: number;
+  receivedAt: Date;
+}) => void;
+
 export interface SmsDeps {
   store: InboundSmsStore;
   log: Logger;
   notifyReply?: ReplyNotifier;
+  converse?: Converse;
 }

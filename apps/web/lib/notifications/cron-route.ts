@@ -12,7 +12,12 @@ function bearerMatches(header: string | null, secret: string): boolean {
 
 // Retries queued owner notifications. Called by the scheduler with
 // `Authorization: Bearer $CRON_SECRET` (Vercel Cron sends this automatically).
-export function cronRoute(getSecret: () => string | undefined, getDeps: () => NotificationDeps | null) {
+export function cronRoute(
+  getSecret: () => string | undefined,
+  getDeps: () => NotificationDeps | null,
+  // Extra work per run (e.g. forwarding customer texts nobody handled).
+  getSweep?: () => ((deps: NotificationDeps) => Promise<number>) | null,
+) {
   return async (request: Request): Promise<Response> => {
     const secret = getSecret();
     // Fail closed: no secret configured means nobody can trigger it.
@@ -22,8 +27,10 @@ export function cronRoute(getSecret: () => string | undefined, getDeps: () => No
     const deps = getDeps();
     if (!deps) return Response.json({ ok: true, processed: 0, disabled: true });
     try {
+      const sweep = getSweep?.();
+      const swept = sweep ? await sweep(deps) : 0;
       const processed = await sendDueNotifications(deps);
-      return Response.json({ ok: true, processed });
+      return Response.json(sweep ? { ok: true, processed, swept } : { ok: true, processed });
     } catch (err) {
       const error = errorLabel(err);
       deps.log("notification.cron_failed", { error });
