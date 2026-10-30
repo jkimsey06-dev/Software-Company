@@ -3,11 +3,12 @@ import {
   type ConversationModel,
   type LeadDetails,
   type SafetyCategory,
+  type SlotChoice,
   type Turn,
   type Understanding,
 } from "@sc/ai";
 import type { MessageUpdate } from "../missed-call/types";
-import type { Conversation, ConversationStore, ThreadMessage, TurnRecord } from "./types";
+import type { BookingState, Conversation, ConversationStore, ThreadMessage, TurnRecord } from "./types";
 
 interface Row extends Conversation {
   tenantId: string;
@@ -60,6 +61,7 @@ export class FakeConversationStore implements ConversationStore {
       leadId,
       createdAt: this.now(),
       details: { serviceId: null, area: null, urgency: "unknown" },
+      booking: { stage: "qualifying", offeredSlots: [], chosenSlot: null, offerRounds: 0, bookedEventId: null, address: null },
       tenantId,
       phone,
       leaseToken: null,
@@ -110,6 +112,28 @@ export class FakeConversationStore implements ConversationStore {
   }
   async setDetails(id: string, details: LeadDetails) {
     this.get(id).details = { ...details };
+  }
+  addresses = new Map<string, string>();
+  async setBooking(id: string, b: Partial<BookingState>) {
+    const c = this.get(id);
+    c.booking = { ...c.booking, ...b };
+  }
+  async updateLeadAddress(_tenantId: string, leadId: string, address: string) {
+    this.addresses.set(leadId, address);
+  }
+  holds = new Map<string, { tenantId: string; start: Date; end: Date }>();
+  async claimEstimateSlot(tenantId: string, conversationId: string, start: Date, end: Date, bufferMinutes: number) {
+    const buffer = bufferMinutes * 60_000;
+    for (const [id, h] of this.holds) {
+      if (id !== conversationId && h.tenantId === tenantId && h.start.getTime() < end.getTime() + buffer && start.getTime() - buffer < h.end.getTime()) {
+        return false;
+      }
+    }
+    this.holds.set(conversationId, { tenantId, start, end });
+    return true;
+  }
+  async releaseEstimateSlot(_tenantId: string, conversationId: string) {
+    this.holds.delete(conversationId);
   }
   async incrementAiReplies(id: string) {
     this.get(id).aiReplies += 1;
@@ -172,6 +196,10 @@ export function understood(o: Partial<Omit<Understanding, "details">> & { detail
 export class FakeModel implements ConversationModel {
   categories: (SafetyCategory | Error)[] = [];
   understandings: (Understanding | Error)[] = [];
+  slotChoices: (SlotChoice | Error)[] = [];
+  addresses: (string | null | Error)[] = [];
+  chooseSlotCalls = 0;
+  extractAddressCalls = 0;
   classifyCalls = 0;
   understandCalls = 0;
   lastLatest = "";
@@ -193,6 +221,45 @@ export class FakeModel implements ConversationModel {
     if (next instanceof Error) throw next;
     return { result: next, info };
   }
+  async chooseSlot() {
+    this.chooseSlotCalls += 1;
+    const next = this.slotChoices.shift() ?? { choice: null, wantsOtherTime: false };
+    if (next instanceof Error) throw next;
+    return { result: next, info };
+  }
+  async extractAddress() {
+    this.extractAddressCalls += 1;
+    const next = this.addresses.length ? this.addresses.shift() : null;
+    if (next instanceof Error) throw next;
+    return { address: next ?? null, info };
+  }
 }
 
 export const unavailable = (reason: ModelUnavailableError["reason"]) => new ModelUnavailableError(reason);
+
+// A fake Google Calendar: busy blocks you set, events it records, and
+// failures you can switch on.
+export class FakeCalendar {
+  busyBlocks: { start: Date; end: Date }[] = [];
+  events: { id: string; start: Date; summary: string; location: string; description: string }[] = [];
+  fail: Error | null = null;
+  busyCalls = 0;
+  // Called on each busy() so a test can book a slot "meanwhile".
+  onBusy: ((call: number) => void) | null = null;
+
+  async busy(from: Date, to: Date) {
+    this.busyCalls += 1;
+    this.onBusy?.(this.busyCalls);
+    if (this.fail) throw this.fail;
+    return this.busyBlocks.filter((b) => b.start < to && from < b.end);
+  }
+  // Ids the owner deleted (Google keeps them as cancelled).
+  cancelled = new Set<string>();
+  async createEvent(e: { id: string; start: Date; summary: string; location: string; description: string }): Promise<"created" | "exists" | "cancelled"> {
+    if (this.fail) throw this.fail;
+    if (this.cancelled.has(e.id)) return "cancelled";
+    if (this.events.some((x) => x.id === e.id)) return "exists";
+    this.events.push(e);
+    return "created";
+  }
+}

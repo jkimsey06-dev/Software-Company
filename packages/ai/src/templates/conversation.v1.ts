@@ -15,7 +15,12 @@ export type FixedMessage =
   | { kind: "out_of_area" }
   | { kind: "unlisted_service" }
   | { kind: "turn_limit" }
-  | { kind: "ask"; question: Question; prefix?: "ai_disclosure" | "other_question" | { faqId: string } };
+  | { kind: "ask"; question: Question; prefix?: "ai_disclosure" | "other_question" | { faqId: string } }
+  // Times come from the owner's calendar, already formatted by our code.
+  | { kind: "offer_times"; slots: string[]; retry?: "taken" | "expired" }
+  | { kind: "ask_address"; slot: string; again?: boolean }
+  | { kind: "booked"; slot: string }
+  | { kind: "other_time" };
 
 function serviceList(config: TenantConfig): string {
   const names = config.services.slice(0, 6).map((s) => s.name.toLowerCase());
@@ -50,6 +55,24 @@ export function renderFixedMessageV1(message: FixedMessage, config: TenantConfig
       return `Thanks! I'll pass this to the team at ${business} to see if they can help, and someone will reach out to you.`;
     case "turn_limit":
       return `Thanks for the details! I'm passing this to the team at ${business}, and someone will reach out to you directly.`;
+    case "offer_times": {
+      const intro =
+        message.retry === "taken"
+          ? "Sorry, that time was just taken. Here are some other times:"
+          : message.retry === "expired"
+            ? "Sorry, those times are no longer available. Here are some new ones:"
+            : `${business} can come out for an estimate at one of these times:`;
+      const list = message.slots.map((slot, i) => `${i + 1}) ${slot}`).join("\n");
+      return `${intro}\n${list}\nReply with the number, or tell us if none of these work.`;
+    }
+    case "ask_address":
+      return message.again
+        ? "Sorry, I didn't catch that. What's the street address (house number and street) for the estimate?"
+        : `Great, ${message.slot} it is. What's the street address for the estimate?`;
+    case "booked":
+      return `You're booked for an estimate on ${message.slot}. ${business} may call to confirm or adjust. Reply STOP to opt out.`;
+    case "other_time":
+      return `No problem. I'll have the team at ${business} reach out to find a time that works.`;
     case "ask": {
       const question = QUESTIONS[message.question](config);
       const prefix = message.prefix;

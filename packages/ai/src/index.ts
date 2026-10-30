@@ -11,7 +11,7 @@ export {
   type Question,
 } from "./templates/conversation.v1";
 export { asksIfAi, looksLikeEmergency } from "./conversation/emergency";
-export { cleanArea, inServiceArea } from "./conversation/service-area";
+export { cleanAddress, cleanArea, inServiceArea, parseSlotNumber } from "./conversation/service-area";
 export {
   CLASSIFIER_MODEL,
   CONVERSATION_MODEL,

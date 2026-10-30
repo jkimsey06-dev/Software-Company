@@ -116,7 +116,7 @@ export function renderCustomerReplyEmail(
   return { subject: `Text from ${caller}`, body: lines.join("\n") };
 }
 
-export type ConversationOutcome = "complete" | "needs_you" | "emergency";
+export type ConversationOutcome = "complete" | "needs_you" | "emergency" | "booked";
 
 const REASONS: Record<string, string> = {
   emergency: "They may have an emergency.",
@@ -131,6 +131,15 @@ const REASONS: Record<string, string> = {
   unlisted_service: "They need something that isn't on your services list.",
   send_failed: "Our last text to them didn't go through.",
   opted_out: "They opted out of texts, so we stopped texting. You can still call them.",
+  wants_other_time: "None of the offered times worked for them. Please call to find a time.",
+  slot_taken: "The time they picked was taken. Please call to find a time.",
+  no_address: "They picked a time but we couldn't get an address. Please call them.",
+  calendar_unavailable: "We couldn't reach your calendar to book. Please call to find a time.",
+  calendar_revoked: "Your calendar connection has stopped working. Please call to find a time, and reconnect your calendar.",
+  slot_expired: "The times we offered had passed by the time they answered. Please call to find a time.",
+  event_cancelled: "The estimate for the time they picked had been deleted from your calendar. Please call to find a time.",
+  booking_uncertain: "We tried to book their estimate but couldn't confirm it went through.",
+  booked_unconfirmed: "We booked their estimate but couldn't confirm it with them by text.",
 };
 
 function reasonLine(reason: string): string {
@@ -148,6 +157,7 @@ export function renderConversationUpdateEmail(
     outcome: ConversationOutcome;
     reason: string;
     details?: LeadDetails;
+    booking?: { slot: string; address: string; maybe?: boolean };
     thread: { from: "customer" | "business"; text: string }[];
   },
 ): { subject: string; body: string } {
@@ -156,14 +166,26 @@ export function renderConversationUpdateEmail(
     complete: `Lead ready: ${caller}`,
     needs_you: `Needs you: ${caller}`,
     emergency: `EMERGENCY: ${caller}`,
+    booked: `Estimate booked: ${caller}`,
   }[update.outcome];
   const lines: string[] = [];
   if (update.outcome === "emergency") {
     lines.push(`${caller} may have an emergency. We told them to call 911 if anyone is in danger. Call them now.`);
+  } else if (update.outcome === "booked" && update.booking) {
+    lines.push(`${caller} booked an estimate for ${update.booking.slot}. It's on your calendar.`);
+    lines.push(`Address (as they wrote it): ${update.booking.address}`);
   } else if (update.outcome === "complete") {
     lines.push(`${caller} is ready for a call back. We told them you'll reach out to set up a time.`);
   } else {
     lines.push(`${caller} needs you to take over. ${reasonLine(update.reason)}`.trim());
+  }
+  if (update.booking && update.outcome !== "booked") {
+    lines.push(
+      update.booking.maybe || update.reason === "booking_uncertain"
+        ? `An estimate for ${update.booking.slot} may be on your calendar. Check your calendar, then call them to confirm.`
+        : `An estimate for ${update.booking.slot} is on your calendar, but they haven't been told. Call them to confirm, or remove it.`,
+    );
+    lines.push(`Address (as they wrote it): ${update.booking.address}`);
   }
   const d = update.details;
   if (d) {

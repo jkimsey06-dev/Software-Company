@@ -24,6 +24,14 @@ function toConversation(row: Record<string, unknown>): Conversation {
       area: (row.area as string | null) ?? null,
       urgency: (row.urgency as Conversation["details"]["urgency"]) ?? "unknown",
     },
+    booking: {
+      stage: (row.stage as Conversation["booking"]["stage"]) ?? "qualifying",
+      offeredSlots: ((row.offered_slots as string[] | null) ?? []).map((s) => new Date(s)),
+      chosenSlot: row.chosen_slot ? new Date(row.chosen_slot as string) : null,
+      offerRounds: (row.offer_rounds as number | null) ?? 0,
+      bookedEventId: (row.booked_event_id as string | null) ?? null,
+      address: (row.address as string | null) ?? null,
+    },
   };
 }
 
@@ -157,6 +165,44 @@ export function createConversationStore(db: SupabaseClient): ConversationStore {
       data(
         await db.from("conversations").update({ ai_replies: row.ai_replies + 1 }).eq("id", id),
         "increment ai replies",
+      );
+    },
+
+    async setBooking(id, b) {
+      const update: Record<string, unknown> = {};
+      if (b.stage) update.stage = b.stage;
+      if (b.offeredSlots) update.offered_slots = b.offeredSlots.map((d) => d.toISOString());
+      if (b.chosenSlot !== undefined) update.chosen_slot = b.chosenSlot?.toISOString() ?? null;
+      if (b.offerRounds !== undefined) update.offer_rounds = b.offerRounds;
+      if (b.bookedEventId !== undefined) update.booked_event_id = b.bookedEventId;
+      if (b.address !== undefined) update.address = b.address;
+      data(await db.from("conversations").update(update).eq("id", id), "set booking state");
+    },
+
+    async updateLeadAddress(tenantId, leadId, address) {
+      data(
+        await db.from("leads").update({ address }).eq("tenant_id", tenantId).eq("id", leadId),
+        "update lead address",
+      );
+    },
+
+    async claimEstimateSlot(tenantId, conversationId, start, end, bufferMinutes) {
+      return data(
+        await db.rpc("claim_estimate_slot", {
+          p_tenant_id: tenantId,
+          p_conversation_id: conversationId,
+          p_start: start.toISOString(),
+          p_end: end.toISOString(),
+          p_buffer: `${bufferMinutes} minutes`,
+        }),
+        "claim estimate slot",
+      ) as boolean;
+    },
+
+    async releaseEstimateSlot(tenantId, conversationId) {
+      data(
+        await db.from("estimate_holds").delete().eq("tenant_id", tenantId).eq("conversation_id", conversationId),
+        "release estimate slot",
       );
     },
 

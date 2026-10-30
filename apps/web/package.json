@@ -8,12 +8,14 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "calendar:link": "node scripts/calendar-link.ts"
   },
   "dependencies": {
     "@sc/ai": "workspace:*",
     "@sc/shared": "workspace:*",
     "@supabase/supabase-js": "2.118.0",
+    "google-auth-library": "11.2.0",
     "next": "16.0.11",
     "react": "19.2.9",
     "react-dom": "19.2.9",

@@ -52,7 +52,9 @@ Otherwise the customer's text is emailed to the owner. All must be true:
    - Missing detail → the next fixed question (service, then area, then urgency), optionally
      after "Yes, I'm an AI assistant..." (once), an approved FAQ answer word for word, or
      "I'll pass that question to the team"
-   - All known → fixed "they'll reach out to set up a time", owner emailed "Lead ready"
+   - All known → if the owner's calendar is connected, offer estimate times and book one
+     (see docs/runbooks/calendar.md); otherwise fixed "they'll reach out to set up a time",
+     owner emailed "Lead ready"
 
 Several texts in a row get one reply. Customer text is passed to the model as escaped
 data inside tags, never as instructions.

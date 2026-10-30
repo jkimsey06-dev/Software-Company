@@ -5,7 +5,9 @@ export type NotificationKind =
   | "textback_failed"
   | "customer_reply"
   | "conversation_update"
-  | "emergency";
+  | "emergency"
+  | "estimate_booked"
+  | "calendar_reconnect";
 
 export interface NewNotification {
   tenantId: string;

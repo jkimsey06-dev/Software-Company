@@ -11,7 +11,7 @@ import {
   type Question,
   type Turn,
 } from "@sc/ai";
-import { canSendTexts, type TenantConfig } from "@sc/shared";
+import { canSendTexts, formatSlot, type TenantConfig } from "@sc/shared";
 import { SmsSendError, errorLabel } from "../missed-call/types";
 import { sendNotification } from "../notifications/dispatch";
 import {
@@ -19,6 +19,7 @@ import {
   renderOwnerEmergencySms,
   type ConversationOutcome,
 } from "../notifications/templates";
+import { planAddressAndBook, planChoice, planOffer, planResumeBooking, type BookingPlan } from "./booking";
 import type {
   Conversation,
   ConversationDeps,
@@ -37,6 +38,9 @@ const DEFAULT_LEASE_WAIT_MS = 20_000;
 const NANP = /^\+1[2-9]\d{9}$/;
 const TWILIO_UNSUBSCRIBED = "21610";
 const DISCLOSURE_START = "Yes, I'm an AI assistant";
+const ADDRESS_AGAIN_START = "Sorry, I didn't catch that. What's the street address";
+const BOOKED_START = "You're booked for an estimate";
+const ADDRESS_ASK = /^Great, .+ it is\. What's the street address/;
 
 type Outcome =
   | { action: "ask"; message: FixedMessage; details: LeadDetails; info?: ModelCallInfo; category?: string }
@@ -48,7 +52,8 @@ type Outcome =
       category?: string;
     }
   | { action: "skipped"; reason: string; category: string; info?: ModelCallInfo }
-  | { action: "emergency"; category: string };
+  | { action: "emergency"; category: string }
+  | { action: "booking"; plan: BookingPlan; details?: LeadDetails; info?: ModelCallInfo; category?: string };
 
 // Called after the SMS webhook has answered Twilio. Returns true when this
 // message was handled (answered, or the owner was told); false means the
@@ -150,6 +155,9 @@ function nextQuestion(config: TenantConfig, d: LeadDetails): Question | null {
 }
 
 async function decide(
+  msg: CustomerMessage,
+  askedAddressAgain: boolean,
+  bookedConfirmed: boolean,
   latest: string,
   history: Turn[],
   conversation: Conversation,
@@ -177,6 +185,22 @@ async function decide(
   if (category === "wrong_number" || category === "spam") return { action: "skipped", reason: category, category };
   if (conversation.aiReplies >= MAX_AI_REPLIES) return { action: "turn_limit", reason: "turn_limit", category };
 
+  // Booking stages: the customer is picking a time or giving the address.
+  const stage = conversation.booking.stage;
+  if (stage !== "qualifying") {
+    try {
+      const plan =
+        stage === "choosing_time"
+          ? await planChoice(msg, conversation, latest, model, deps)
+          : stage === "asking_address"
+            ? await planAddressAndBook(msg, conversation, latest, askedAddressAgain, model, deps)
+            : await planResumeBooking(msg, conversation, bookedConfirmed, deps);
+      return { action: "booking", plan, info: plan.info, category };
+    } catch (err) {
+      return { ...unavailable("booking", err), category } as Outcome;
+    }
+  }
+
   let understood;
   try {
     understood = await model.understand({ history, latest, known: conversation.details });
@@ -198,7 +222,11 @@ async function decide(
   }
 
   const question = nextQuestion(config, details);
-  if (!question) return { action: "complete", reason: "complete", details, info, category };
+  if (!question) {
+    // All details known: offer times from the owner's calendar when we can.
+    const plan = await planOffer(msg, { ...conversation, details }, deps);
+    return { action: "booking", plan, details, info, category };
+  }
   const prefix =
     asksIfAi(latest) && !disclosedAlready
       ? ("ai_disclosure" as const)
@@ -236,7 +264,15 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
   const model = deps.modelFor(config);
   if (!model) return true;
   const disclosed = thread.some((m) => m.from === "business" && m.text.startsWith(DISCLOSURE_START));
-  const outcome = await decide(latest, history, conversation, config, model, disclosed, deps, ctx);
+  // "Didn't catch that" since the latest address question (each pick gets one retry).
+  let askedAgain = false;
+  for (const m of thread) {
+    if (m.from !== "business") continue;
+    if (ADDRESS_ASK.test(m.text)) askedAgain = false;
+    else if (m.text.startsWith(ADDRESS_AGAIN_START)) askedAgain = true;
+  }
+  const bookedConfirmed = thread.some((m) => m.from === "business" && m.text.startsWith(BOOKED_START));
+  const outcome = await decide(msg, askedAgain, bookedConfirmed, latest, history, conversation, config, model, disclosed, deps, ctx);
   const info = "info" in outcome ? outcome.info : undefined;
   const turns = (action: TurnAction, reason?: string, outboundMessageId?: string | null): TurnRecord[] =>
     sids.map((sid) => ({
@@ -254,7 +290,7 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
     }));
 
   if (outcome.action === "emergency") {
-    await handleEmergency(msg, conversation, sids, outcome.category, deps);
+    await handleEmergency(msg, conversation, sids, outcome.category, deps, pendingBooking(conversation, config));
     return true;
   }
 
@@ -271,29 +307,52 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
   const message: FixedMessage | null =
     outcome.action === "ask"
       ? outcome.message
-      : outcome.action === "skipped"
+      : outcome.action === "booking"
+        ? outcome.plan.message
+        : outcome.action === "skipped"
         ? null
         : { kind: outcome.action === "complete" ? "complete" : outcome.action === "turn_limit" ? "turn_limit" : outcome.action === "out_of_area" ? "out_of_area" : outcome.action === "unlisted_service" ? "unlisted_service" : outcome.action === "handoff" ? "handoff" : "fallback" };
 
+  // The event is (or may be) on their calendar: if we can't confirm it, the owner must know.
+  const onCalendar = outcome.action === "booking" ? outcome.plan.onCalendar : pendingBooking(conversation, config);
   let outboundId: string | null = null;
   if (message) {
     // Last checks before texting: they may have just replied STOP, or an
     // emergency may have handed the conversation off.
     if (await store.isOptedOut(tenantId, phone)) {
-      await finish(msg, conversation, "handed_off", "opted_out", details, deps);
+      await finish(msg, conversation, "handed_off", "opted_out", details, deps, undefined, onCalendar);
       await store.recordTurns(turns("opted_out", "opted_out"));
       return true;
     }
     const now = await store.startConversation(tenantId, phone, msg.leadId);
-    if (now.id !== conversationId || now.status !== "active") return true;
+    if (now.id !== conversationId || now.status !== "active") {
+      // Handed off meanwhile (an emergency): still tell the owner about the event.
+      if (onCalendar) await emailOwner(msg, conversation, "needs_you", "booked_unconfirmed", details ?? conversation.details, `conversation-update:${conversation.id}:booked_unconfirmed`, deps, onCalendar);
+      return true;
+    }
 
     const sent = await sendText(msg, `conversation-reply:${newest.messageSid}`, phone, renderFixedMessageV1(message, config), deps);
     outboundId = sent.id;
     if (!sent.delivered) {
-      await finish(msg, conversation, "handed_off", "send_failed", details, deps);
+      await finish(msg, conversation, "handed_off", "send_failed", details, deps, undefined, onCalendar);
       await store.recordTurns(turns("send_failed", sent.code, outboundId));
       return true;
     }
+  }
+
+  if (outcome.action === "booking") {
+    const { plan } = outcome;
+    await plan.apply?.();
+    if (plan.terminal) {
+      const t = plan.terminal;
+      await finish(msg, conversation, t.status, t.reason, details ?? conversation.details, deps, t.outcome, t.booking);
+      await store.recordTurns(turns(plan.action, plan.reason, outboundId));
+    } else {
+      await store.recordTurns(turns(plan.action, plan.reason, outboundId));
+      await store.incrementAiReplies(conversationId);
+    }
+    log("conversation.turn", { ...ctx, action: plan.action, category: outcome.category ?? "none", merged: sids.length - 1 });
+    return Boolean(plan.terminal);
   }
 
   if (outcome.action === "ask") {
@@ -304,10 +363,18 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
   }
   // The owner email is queued before the turn is recorded: if it can't be,
   // the message stays unhandled and is forwarded instead (never lost).
-  await finish(msg, conversation, outcome.action === "complete" ? "completed" : "handed_off", outcome.reason, details, deps);
+  await finish(msg, conversation, outcome.action === "complete" ? "completed" : "handed_off", outcome.reason, details, deps, undefined, onCalendar);
   await store.recordTurns(turns(outcome.action, outcome.reason, outboundId));
   log("conversation.turn", { ...ctx, action: outcome.action, category: outcome.category ?? "none", merged: sids.length - 1 });
   return true;
+}
+
+// Mid-booking (event being created, or created but not confirmed): what the
+// owner needs to know if the conversation ends another way.
+function pendingBooking(conversation: Conversation, config: TenantConfig): { slot: string; address: string; maybe?: boolean } | undefined {
+  const { stage, chosenSlot, address } = conversation.booking;
+  if ((stage !== "booking" && stage !== "booked") || !chosenSlot || !address) return undefined;
+  return { slot: formatSlot(chosenSlot, config.timezone), address, maybe: stage === "booking" };
 }
 
 async function finish(
@@ -317,9 +384,11 @@ async function finish(
   reason: string,
   details: LeadDetails | undefined,
   deps: ConversationDeps,
+  outcome: ConversationOutcome = status === "completed" ? "complete" : "needs_you",
+  booking?: { slot: string; address: string; maybe?: boolean },
 ): Promise<void> {
   await deps.store.setStatus(conversation.id, status, reason);
-  await emailOwner(msg, conversation, status === "completed" ? "complete" : "needs_you", reason, details, `conversation-update:${conversation.id}:${status}`, deps);
+  await emailOwner(msg, conversation, outcome, reason, details, `conversation-update:${conversation.id}:${outcome}`, deps, booking);
 }
 
 // Claim, send, record: the same never-twice pattern as the text-back.
@@ -365,6 +434,7 @@ async function handleEmergency(
   sids: string[],
   category: string,
   deps: ConversationDeps,
+  booking?: { slot: string; address: string; maybe?: boolean },
 ): Promise<void> {
   const { store, log, notifications } = deps;
   const { tenantId, config } = msg;
@@ -397,7 +467,7 @@ async function handleEmergency(
   if (conversation.status !== "handed_off") await store.setStatus(conversation.id, "handed_off", "emergency");
   // Every emergency text reaches the owner's inbox; queued before the turn is
   // recorded so a failure leaves the message to be forwarded.
-  await emailOwner(msg, conversation, "emergency", category, conversation.details, `emergency:${sid}`, deps);
+  await emailOwner(msg, conversation, "emergency", category, conversation.details, `emergency:${sid}`, deps, booking);
   await store.recordTurns(
     sids.map((s) => ({
       tenantId,
@@ -420,6 +490,7 @@ async function emailOwner(
   details: LeadDetails | undefined,
   key: string,
   deps: ConversationDeps,
+  booking?: { slot: string; address: string; maybe?: boolean },
 ): Promise<void> {
   const { store, log, notifications } = deps;
   const { tenantId, config } = msg;
@@ -432,11 +503,12 @@ async function emailOwner(
       outcome,
       reason,
       details,
+      booking,
       thread: thread.slice(-12),
     });
     const id = await notifications.store.enqueue({
       tenantId,
-      kind: outcome === "emergency" ? "emergency" : "conversation_update",
+      kind: outcome === "emergency" ? "emergency" : outcome === "booked" ? "estimate_booked" : "conversation_update",
       idempotencyKey: key,
       leadId: msg.leadId,
       recipientEmail: to,
