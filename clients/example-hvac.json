@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "slug": "example-hvac",
+  "businessName": "Example Heating & Air",
+  "trade": "hvac",
+  "timezone": "America/New_York",
+  "services": [
+    { "id": "ac-repair", "name": "AC repair", "emergencyEligible": true },
+    { "id": "furnace-repair", "name": "Furnace repair", "emergencyEligible": true },
+    { "id": "system-replacement", "name": "System replacement estimate" },
+    { "id": "maintenance", "name": "Seasonal maintenance" }
+  ],
+  "hours": {
+    "mon": [{ "open": "08:00", "close": "17:00" }],
+    "tue": [{ "open": "08:00", "close": "17:00" }],
+    "wed": [{ "open": "08:00", "close": "17:00" }],
+    "thu": [{ "open": "08:00", "close": "17:00" }],
+    "fri": [{ "open": "08:00", "close": "17:00" }]
+  },
+  "serviceArea": {
+    "zipCodes": ["37311", "37312", "37323"],
+    "cities": ["Cleveland", "Ooltewah"]
+  },
+  "tone": { "style": "friendly", "notes": "Fake example tenant. Not a real business." },
+  "escalationContact": { "name": "Test Owner", "phone": "+14235550100", "email": "owner@example.com" },
+  "knowledgeBase": [
+    {
+      "id": "service-call-fee",
+      "question": "Do you charge for a service call?",
+      "answer": "The owner will confirm pricing when they call you back."
+    }
+  ],
+  "messaging": { "a2pStatus": "not_started" },
+  "calendar": { "provider": "google" }
+}
