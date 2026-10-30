@@ -19,7 +19,7 @@ import {
   renderOwnerEmergencySms,
   type ConversationOutcome,
 } from "../notifications/templates";
-import { planAddressAndBook, planChoice, planOffer, type BookingPlan } from "./booking";
+import { planAddressAndBook, planChoice, planOffer, planResumeBooking, type BookingPlan } from "./booking";
 import type {
   Conversation,
   ConversationDeps,
@@ -39,6 +39,7 @@ const NANP = /^\+1[2-9]\d{9}$/;
 const TWILIO_UNSUBSCRIBED = "21610";
 const DISCLOSURE_START = "Yes, I'm an AI assistant";
 const ADDRESS_AGAIN_START = "Sorry, I didn't catch that. What's the street address";
+const ADDRESS_ASK = /^Great, .+ it is\. What's the street address/;
 
 type Outcome =
   | { action: "ask"; message: FixedMessage; details: LeadDetails; info?: ModelCallInfo; category?: string }
@@ -184,12 +185,14 @@ async function decide(
 
   // Booking stages: the customer is picking a time or giving the address.
   const stage = conversation.booking.stage;
-  if (stage === "choosing_time" || stage === "asking_address") {
+  if (stage !== "qualifying") {
     try {
       const plan =
         stage === "choosing_time"
           ? await planChoice(msg, conversation, latest, model, deps)
-          : await planAddressAndBook(msg, conversation, latest, askedAddressAgain, model, deps);
+          : stage === "asking_address"
+            ? await planAddressAndBook(msg, conversation, latest, askedAddressAgain, model, deps)
+            : await planResumeBooking(msg, conversation, deps);
       return { action: "booking", plan, info: plan.info, category };
     } catch (err) {
       return { ...unavailable("booking", err), category } as Outcome;
@@ -259,7 +262,13 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
   const model = deps.modelFor(config);
   if (!model) return true;
   const disclosed = thread.some((m) => m.from === "business" && m.text.startsWith(DISCLOSURE_START));
-  const askedAgain = thread.some((m) => m.from === "business" && m.text.startsWith(ADDRESS_AGAIN_START));
+  // "Didn't catch that" since the latest address question (each pick gets one retry).
+  let askedAgain = false;
+  for (const m of thread) {
+    if (m.from !== "business") continue;
+    if (ADDRESS_ASK.test(m.text)) askedAgain = false;
+    else if (m.text.startsWith(ADDRESS_AGAIN_START)) askedAgain = true;
+  }
   const outcome = await decide(msg, askedAgain, latest, history, conversation, config, model, disclosed, deps, ctx);
   const info = "info" in outcome ? outcome.info : undefined;
   const turns = (action: TurnAction, reason?: string, outboundMessageId?: string | null): TurnRecord[] =>
@@ -301,22 +310,28 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
         ? null
         : { kind: outcome.action === "complete" ? "complete" : outcome.action === "turn_limit" ? "turn_limit" : outcome.action === "out_of_area" ? "out_of_area" : outcome.action === "unlisted_service" ? "unlisted_service" : outcome.action === "handoff" ? "handoff" : "fallback" };
 
+  // The event is on their calendar: if we can't confirm it, the owner must know.
+  const onCalendar = outcome.action === "booking" ? outcome.plan.onCalendar : undefined;
   let outboundId: string | null = null;
   if (message) {
     // Last checks before texting: they may have just replied STOP, or an
     // emergency may have handed the conversation off.
     if (await store.isOptedOut(tenantId, phone)) {
-      await finish(msg, conversation, "handed_off", "opted_out", details, deps);
+      await finish(msg, conversation, "handed_off", "opted_out", details, deps, undefined, onCalendar);
       await store.recordTurns(turns("opted_out", "opted_out"));
       return true;
     }
     const now = await store.startConversation(tenantId, phone, msg.leadId);
-    if (now.id !== conversationId || now.status !== "active") return true;
+    if (now.id !== conversationId || now.status !== "active") {
+      // Handed off meanwhile (an emergency): still tell the owner about the event.
+      if (onCalendar) await emailOwner(msg, conversation, "needs_you", "booked_unconfirmed", details ?? conversation.details, `conversation-update:${conversation.id}:booked_unconfirmed`, deps, onCalendar);
+      return true;
+    }
 
     const sent = await sendText(msg, `conversation-reply:${newest.messageSid}`, phone, renderFixedMessageV1(message, config), deps);
     outboundId = sent.id;
     if (!sent.delivered) {
-      await finish(msg, conversation, "handed_off", "send_failed", details, deps);
+      await finish(msg, conversation, "handed_off", "send_failed", details, deps, undefined, onCalendar);
       await store.recordTurns(turns("send_failed", sent.code, outboundId));
       return true;
     }

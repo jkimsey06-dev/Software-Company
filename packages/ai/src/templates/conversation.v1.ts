@@ -17,7 +17,7 @@ export type FixedMessage =
   | { kind: "turn_limit" }
   | { kind: "ask"; question: Question; prefix?: "ai_disclosure" | "other_question" | { faqId: string } }
   // Times come from the owner's calendar, already formatted by our code.
-  | { kind: "offer_times"; slots: string[]; retry?: boolean }
+  | { kind: "offer_times"; slots: string[]; retry?: "taken" | "expired" }
   | { kind: "ask_address"; slot: string; again?: boolean }
   | { kind: "booked"; slot: string }
   | { kind: "other_time" };
@@ -56,9 +56,12 @@ export function renderFixedMessageV1(message: FixedMessage, config: TenantConfig
     case "turn_limit":
       return `Thanks for the details! I'm passing this to the team at ${business}, and someone will reach out to you directly.`;
     case "offer_times": {
-      const intro = message.retry
-        ? "Sorry, that time was just taken. Here are some other times:"
-        : `${business} can come out for an estimate at one of these times:`;
+      const intro =
+        message.retry === "taken"
+          ? "Sorry, that time was just taken. Here are some other times:"
+          : message.retry === "expired"
+            ? "Sorry, those times are no longer available. Here are some new ones:"
+            : `${business} can come out for an estimate at one of these times:`;
       const list = message.slots.map((slot, i) => `${i + 1}) ${slot}`).join("\n");
       return `${intro}\n${list}\nReply with the number, or tell us if none of these work.`;
     }

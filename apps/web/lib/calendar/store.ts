@@ -5,6 +5,7 @@ export interface CalendarConnection {
   calendarId: string;
   refreshTokenEnc: string;
   status: "connected" | "revoked";
+  connectedAt: Date;
 }
 
 export interface CalendarStore {
@@ -26,12 +27,14 @@ export function createCalendarStore(db: SupabaseClient): CalendarStore {
       const row = data(
         await db
           .from("calendar_connections")
-          .select("calendar_id, refresh_token_enc, status")
+          .select("calendar_id, refresh_token_enc, status, connected_at")
           .eq("tenant_id", tenantId)
           .maybeSingle(),
         "get calendar connection",
-      ) as { calendar_id: string; refresh_token_enc: string; status: "connected" | "revoked" } | null;
-      return row ? { calendarId: row.calendar_id, refreshTokenEnc: row.refresh_token_enc, status: row.status } : null;
+      ) as { calendar_id: string; refresh_token_enc: string; status: "connected" | "revoked"; connected_at: string } | null;
+      return row
+        ? { calendarId: row.calendar_id, refreshTokenEnc: row.refresh_token_enc, status: row.status, connectedAt: new Date(row.connected_at) }
+        : null;
     },
 
     async saveConnection(tenantId, calendarId, refreshTokenEnc) {

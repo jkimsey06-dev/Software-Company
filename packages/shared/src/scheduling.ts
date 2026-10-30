@@ -67,9 +67,15 @@ export function zonedToUtc(
   timeZone: string,
 ): Date {
   const guess = Date.UTC(y, m - 1, d, hour, minute);
-  const first = guess - offsetMinutes(new Date(guess), timeZone) * 60_000;
-  const second = guess - offsetMinutes(new Date(first), timeZone) * 60_000;
-  return new Date(Math.min(first, second));
+  // The offset can only be one of the two in effect 12h either side.
+  const offsets = [...new Set([-12, 12].map((h) => offsetMinutes(new Date(guess + h * 3_600_000), timeZone)))];
+  const candidates = offsets.map((o) => guess - o * 60_000).sort((a, b) => a - b);
+  const matches = candidates.filter((c) => {
+    const p = parts(new Date(c), timeZone);
+    return p.year === y && p.month === m && p.day === d && p.hour === hour && p.minute === minute;
+  });
+  // Repeated time: the first occurrence. Missing time (gap): the later instant.
+  return new Date(matches[0] ?? candidates[candidates.length - 1]!);
 }
 
 function hhmm(value: string): number {
@@ -88,6 +94,8 @@ export function findEstimateSlots(config: TenantConfig, opts: SlotOptions): Date
   const step = opts.stepMinutes ?? 30;
   const buffer = (opts.bufferMinutes ?? 30) * 60_000;
   const earliest = opts.now.getTime() + (opts.minLeadMinutes ?? 120) * 60_000;
+  // An unreadable busy block makes every time look busy: fail closed.
+  if (opts.busy.some((b) => Number.isNaN(b.start.getTime()) || Number.isNaN(b.end.getTime()))) return [];
   const busy = opts.busy.map((b) => ({ start: new Date(b.start.getTime() - buffer), end: new Date(b.end.getTime() + buffer) }));
 
   // Free slots per day, in order.
@@ -98,7 +106,7 @@ export function findEstimateSlots(config: TenantConfig, opts: SlotOptions): Date
     const dayNoon = new Date(Date.UTC(today.year, today.month - 1, today.day + i, 12));
     const local = parts(dayNoon, "UTC");
     const weekday = WEEKDAYS[dayNoon.getUTCDay()] as Weekday;
-    const ranges = config.hours[weekday] ?? [];
+    const ranges = [...(config.hours[weekday] ?? [])].sort((a, b) => hhmm(a.open) - hhmm(b.open));
     const slots: Date[] = [];
     for (const range of ranges) {
       for (let t = hhmm(range.open); t + duration <= hhmm(range.close); t += step) {
@@ -106,13 +114,13 @@ export function findEstimateSlots(config: TenantConfig, opts: SlotOptions): Date
         // Skip wall-clock times that don't exist (spring-forward gap).
         const back = parts(start, tz);
         if (back.hour * 60 + back.minute !== t) continue;
-        if (start.getTime() < earliest) continue;
+        if (start.getTime() < earliest || slots.some((x) => x.getTime() === start.getTime())) continue;
         const slot = { start, end: new Date(start.getTime() + duration * 60_000) };
         if (busy.some((b) => overlaps(slot, b))) continue;
         slots.push(start);
       }
     }
-    if (slots.length) byDay.push(slots);
+    if (slots.length) byDay.push(slots.sort((a, b) => a.getTime() - b.getTime()));
   }
 
   // Spread across days: the first free slot of each day; if more are needed,

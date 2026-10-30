@@ -10,7 +10,8 @@ export type CalendarAccess =
   | { ok: false; reason: "not_connected" | "revoked" | "unavailable" };
 
 export type ConversationStatus = "active" | "handed_off" | "completed";
-export type ConversationStage = "qualifying" | "choosing_time" | "asking_address" | "booked";
+// "booking": the event is being created; a retry finishes it.
+export type ConversationStage = "qualifying" | "choosing_time" | "asking_address" | "booking" | "booked";
 
 export interface BookingState {
   stage: ConversationStage;
@@ -18,6 +19,8 @@ export interface BookingState {
   chosenSlot: Date | null;
   offerRounds: number;
   bookedEventId: string | null;
+  // Kept after "that time was taken" so they aren't asked again.
+  address: string | null;
 }
 
 export interface Conversation {
@@ -100,6 +103,10 @@ export interface ConversationStore {
   incrementAiReplies(conversationId: string): Promise<void>;
   setBooking(conversationId: string, booking: Partial<BookingState>): Promise<void>;
   updateLeadAddress(tenantId: string, leadId: string, address: string): Promise<void>;
+  // True if this conversation now holds the time; false if another
+  // conversation of the tenant holds an overlapping one.
+  claimEstimateSlot(tenantId: string, conversationId: string, start: Date, end: Date, bufferMinutes: number): Promise<boolean>;
+  releaseEstimateSlot(tenantId: string, conversationId: string): Promise<void>;
   updateLeadDetails(tenantId: string, leadId: string, details: LeadDetails): Promise<void>;
   isOptedOut(tenantId: string, phone: string): Promise<boolean>;
   addOptOut(tenantId: string, phone: string): Promise<void>;

@@ -61,7 +61,7 @@ export class FakeConversationStore implements ConversationStore {
       leadId,
       createdAt: this.now(),
       details: { serviceId: null, area: null, urgency: "unknown" },
-      booking: { stage: "qualifying", offeredSlots: [], chosenSlot: null, offerRounds: 0, bookedEventId: null },
+      booking: { stage: "qualifying", offeredSlots: [], chosenSlot: null, offerRounds: 0, bookedEventId: null, address: null },
       tenantId,
       phone,
       leaseToken: null,
@@ -120,6 +120,20 @@ export class FakeConversationStore implements ConversationStore {
   }
   async updateLeadAddress(_tenantId: string, leadId: string, address: string) {
     this.addresses.set(leadId, address);
+  }
+  holds = new Map<string, { tenantId: string; start: Date; end: Date }>();
+  async claimEstimateSlot(tenantId: string, conversationId: string, start: Date, end: Date, bufferMinutes: number) {
+    const buffer = bufferMinutes * 60_000;
+    for (const [id, h] of this.holds) {
+      if (id !== conversationId && h.tenantId === tenantId && h.start.getTime() < end.getTime() + buffer && start.getTime() - buffer < h.end.getTime()) {
+        return false;
+      }
+    }
+    this.holds.set(conversationId, { tenantId, start, end });
+    return true;
+  }
+  async releaseEstimateSlot(_tenantId: string, conversationId: string) {
+    this.holds.delete(conversationId);
   }
   async incrementAiReplies(id: string) {
     this.get(id).aiReplies += 1;
@@ -239,10 +253,13 @@ export class FakeCalendar {
     if (this.fail) throw this.fail;
     return this.busyBlocks.filter((b) => b.start < to && from < b.end);
   }
-  async createEvent(e: { id: string; start: Date; summary: string; location: string; description: string }) {
+  // Ids the owner deleted (Google keeps them as cancelled).
+  cancelled = new Set<string>();
+  async createEvent(e: { id: string; start: Date; summary: string; location: string; description: string }): Promise<"created" | "exists" | "cancelled"> {
     if (this.fail) throw this.fail;
-    if (this.events.some((x) => x.id === e.id)) return "exists" as const;
+    if (this.cancelled.has(e.id)) return "cancelled";
+    if (this.events.some((x) => x.id === e.id)) return "exists";
     this.events.push(e);
-    return "created" as const;
+    return "created";
   }
 }

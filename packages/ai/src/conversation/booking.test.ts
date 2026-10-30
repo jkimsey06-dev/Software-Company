@@ -30,7 +30,7 @@ describe("cleanAddress", () => {
     expect(cleanAddress(a)).toBeNull();
   });
   it("caps the length", () => {
-    expect(cleanAddress(`1 ${"a".repeat(300)}`)!.length).toBeLessThanOrEqual(150);
+    expect(cleanAddress(`123 Main St, ${"a".repeat(300)}`)!.length).toBeLessThanOrEqual(150);
   });
 });
 

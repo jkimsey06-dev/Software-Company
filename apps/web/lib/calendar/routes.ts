@@ -11,6 +11,7 @@ export interface CalendarRouteDeps {
   store: CalendarStore;
   oauth: () => OAuth2Client;
   log: Logger;
+  opsAlert?: (event: string, fields: Record<string, string>) => Promise<void>;
 }
 
 function page(status: number, title: string, text: string): Response {
@@ -56,10 +57,17 @@ export function callbackRoute(getDeps: () => CalendarRouteDeps) {
     const code = params.get("code");
     if (!code || code.length > 2000) return INVALID();
 
-    // Single use: the link is spent once Google sends the owner back with a code.
-    if (!(await deps.store.useLinkNonce(link.nonce, link.tenantId))) return INVALID();
-
     try {
+      // Single use: the link is spent once Google sends the owner back with a code.
+      if (!(await deps.store.useLinkNonce(link.nonce, link.tenantId))) return INVALID();
+      // A link sent before the current connection can't replace it (an old,
+      // forwarded link would otherwise let someone else's calendar take over).
+      const existing = await deps.store.getConnection(link.tenantId);
+      if (existing?.status === "connected" && existing.connectedAt.getTime() > link.issuedAt) {
+        deps.log("calendar.stale_link", { tenantId: link.tenantId });
+        return INVALID();
+      }
+
       const oauth = deps.oauth();
       const { tokens } = await oauth.getToken(code);
       const granted = (tokens.scope ?? "").split(" ");
@@ -68,7 +76,9 @@ export function callbackRoute(getDeps: () => CalendarRouteDeps) {
         return page(400, "Calendar not connected", "Please allow both calendar permissions. Ask for a new link to try again.");
       }
       await deps.store.saveConnection(link.tenantId, "primary", encryptToken(tokens.refresh_token, deps.env.tokenKey, link.tenantId));
-      deps.log("calendar.connected", { tenantId: link.tenantId });
+      deps.log("calendar.connected", { tenantId: link.tenantId, replaced: String(Boolean(existing)) });
+      // Replacing a calendar is rare: make sure a person sees it.
+      if (existing) await deps.opsAlert?.("calendar.connection_replaced", { tenantId: link.tenantId }).catch(() => undefined);
       return page(200, "Your calendar is connected", "Customers who text in can now pick a time for an estimate, and it'll show up on your calendar. You can close this page.");
     } catch (err) {
       deps.log("calendar.connect_failed", { tenantId: link.tenantId, error: errorLabel(err) });

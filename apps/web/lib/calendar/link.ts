@@ -11,6 +11,7 @@ interface Payload {
   t: string; // tenant id
   e: number; // expires at, ms
   n: string; // nonce
+  i: number; // issued at, ms
 }
 
 function sign(body: string, secret: string): string {
@@ -19,7 +20,7 @@ function sign(body: string, secret: string): string {
 
 export function createLinkToken(tenantId: string, secret: string, now = Date.now(), ttlMs = DEFAULT_TTL_MS): string {
   if (secret.length < 32) throw new Error("CALENDAR_LINK_SECRET must be at least 32 characters");
-  const body = Buffer.from(JSON.stringify({ t: tenantId, e: now + ttlMs, n: randomBytes(16).toString("base64url") } satisfies Payload)).toString("base64url");
+  const body = Buffer.from(JSON.stringify({ t: tenantId, e: now + ttlMs, n: randomBytes(16).toString("base64url"), i: now } satisfies Payload)).toString("base64url");
   return `${body}.${sign(body, secret)}`;
 }
 
@@ -27,7 +28,7 @@ export function verifyLinkToken(
   token: string | null,
   secret: string | undefined,
   now = Date.now(),
-): { tenantId: string; nonce: string } | null {
+): { tenantId: string; nonce: string; issuedAt: number } | null {
   if (!token || !secret || secret.length < 32 || token.length > 1000) return null;
   const [body, mac] = token.split(".");
   if (!body || !mac) return null;
@@ -40,7 +41,7 @@ export function verifyLinkToken(
   } catch {
     return null;
   }
-  if (typeof payload.t !== "string" || typeof payload.n !== "string" || typeof payload.e !== "number") return null;
-  if (!/^[0-9a-f-]{36}$/.test(payload.t) || payload.e < now) return null;
-  return { tenantId: payload.t, nonce: payload.n };
+  if (typeof payload.t !== "string" || typeof payload.n !== "string" || typeof payload.e !== "number" || typeof payload.i !== "number") return null;
+  if (!/^[0-9a-f-]{36}$/.test(payload.t) || payload.e < now || payload.i > now) return null;
+  return { tenantId: payload.t, nonce: payload.n, issuedAt: payload.i };
 }

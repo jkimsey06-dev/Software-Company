@@ -133,11 +133,12 @@ describe("booking an estimate from the owner's calendar", () => {
     expect(s.conv().booking).toMatchObject({ stage: "choosing_time", offerRounds: 2 });
     expect(s.calendar.events).toHaveLength(0);
 
-    await s.say("1");
+    // The address they gave is reused, so picking again books straight away.
+    expect(s.conv().booking.address).toBe("123 Main St");
     s.calendar.busyBlocks.push({ start: new Date("2026-10-01T00:00:00Z"), end: new Date("2026-12-01T00:00:00Z") });
-    s.model.addresses.push("123 Main St");
-    await s.say("123 Main St");
+    await s.say("1");
     expect(s.conv()).toMatchObject({ status: "handed_off", reason: "slot_taken" });
+    expect(s.model.extractAddressCalls).toBe(1);
   });
 
   it("booking twice for the same time creates one event", async () => {
@@ -200,6 +201,56 @@ describe("when the calendar can't be used", () => {
     expect(bodies(s).some((b) => b.startsWith("You're booked"))).toBe(false);
     expect(s.conv()).toMatchObject({ status: "handed_off", reason: "calendar_unavailable" });
     expect(s.email.sent[0]?.text).toContain("couldn't reach your calendar");
+  });
+});
+
+describe("booking races and retries", () => {
+  it("two customers pick the same time: only the first gets it", async () => {
+    const a = setup();
+    // Another conversation of this tenant already holds Monday 8 AM.
+    await a.store.claimEstimateSlot(TENANT_ID, "conv-other", new Date("2026-11-02T13:00:00Z"), new Date("2026-11-02T14:00:00Z"), 30);
+    await a.say("AC repair in Cleveland, soon");
+    await a.say("2");
+    a.model.addresses.push("123 Main St");
+    await a.say("123 Main St");
+    expect(bodies(a).at(-1)).toMatch(/^Sorry, that time was just taken/);
+    expect(a.calendar.events).toHaveLength(0);
+  });
+
+  it("a failed check releases the hold", async () => {
+    const s = setup();
+    await s.say("AC repair in Cleveland, soon");
+    await s.say("2");
+    s.calendar.fail = new CalendarUnavailableError("503");
+    s.model.addresses.push("123 Main St");
+    await s.say("123 Main St");
+    expect(s.store.holds.size).toBe(0);
+  });
+
+  it("resumes a booking whose event was created before a crash", async () => {
+    const s = setup();
+    await s.say("AC repair in Cleveland, soon");
+    await s.say("2");
+    const slot = new Date("2026-11-02T13:00:00Z");
+    const id = eventIdFor(s.conv().id, slot);
+    // As if the last attempt saved "booking", created the event, then died.
+    await s.store.setBooking(s.conv().id, { stage: "booking", chosenSlot: slot, bookedEventId: id, address: "123 Main St" });
+    s.calendar.events.push({ id, start: slot, summary: "", location: "", description: "" });
+    await s.say("123 Main St");
+    expect(bodies(s).at(-1)).toMatch(/^You're booked/);
+    expect(s.calendar.events).toHaveLength(1);
+    expect(s.model.extractAddressCalls).toBe(0);
+  });
+
+  it("an event the owner deleted is not put back", async () => {
+    const s = setup();
+    await s.say("AC repair in Cleveland, soon");
+    await s.say("2");
+    s.calendar.cancelled.add(eventIdFor(s.conv().id, new Date("2026-11-02T13:00:00Z")));
+    s.model.addresses.push("123 Main St");
+    await s.say("123 Main St");
+    expect(bodies(s).some((b) => b.startsWith("You're booked"))).toBe(false);
+    expect(s.conv()).toMatchObject({ status: "handed_off", reason: "event_cancelled" });
   });
 });
 

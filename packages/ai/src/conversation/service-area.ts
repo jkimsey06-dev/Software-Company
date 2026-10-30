@@ -26,23 +26,48 @@ export function cleanArea(area: string | null): string | null {
   return cleaned || null;
 }
 
-// A street address the customer gave: safe characters only, short, and it must
-// look like an address (a house number and a word).
+const STREET_WORDS =
+  "st|street|rd|road|ave|avenue|dr|drive|ln|lane|ct|court|blvd|boulevard|way|pl|place|cir|circle|pkwy|parkway|hwy|highway|trl|trail|ter|terrace|pike|loop|run|pt|point|sq|square|row|path|cv|cove|bnd|bend|ridge|rdg|holw|hollow|xing|crossing|route|rte|county road|cr|lp|walk|alley|aly|fwy|freeway|tpke|turnpike|byp|bypass|mtn|mountain|vw|view|hts|heights|est|estates|cres|crescent|grv|grove|hl|hill|pass|spur|trce|trace";
+// House number (optionally with a grid prefix like N1234), then a street that
+// ends in a street word or a numbered road ("Hwy 64", "County Rd 5").
+const STREET_ADDRESS = new RegExp(
+  `^[nsew]?\\d{1,6}[a-z]?(?:-\\d{1,4})? (?:[a-z0-9.'-]+ ){0,5}(?:${STREET_WORDS})(?: \\d{1,4}[a-z]?)?(?:[ ,].*)?$`,
+);
+const RURAL_ROUTE = /^(?:rr|rural route|hc|highway contract) ?\d{1,4},? box \d{1,6}\b/;
+const PO_BOX = /\bp\.? ?o\.? ?box\b|\bpost office box\b/;
+const LINK = /https?:|www\.|\b[a-z0-9-]+\.(?:com|net|org|io|co|us|biz|info|me|ly|app)\b/;
+const PHONE = /\d[\d ().-]{8,}\d/;
+
+// A street address the customer gave, or null. It goes on the owner's calendar
+// event and the lead, so it must look like a place an estimate can happen:
+// a house number and a street (or a rural route), no PO boxes, links or phone
+// numbers. Safe characters only, short.
 export function cleanAddress(address: string | null): string | null {
   if (!address) return null;
   const cleaned = address
     .normalize("NFKC")
-    .replace(/[^\p{L}\p{N} ,.#'/-]/gu, "")
+    .replace(/[^\p{L}\p{N} ,.#'-]/gu, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 150);
-  return /\d/.test(cleaned) && /\p{L}{2,}/u.test(cleaned) ? cleaned : null;
+  const t = cleaned.toLowerCase();
+  if (PO_BOX.test(t) || LINK.test(t) || PHONE.test(t)) return null;
+  return STREET_ADDRESS.test(t) || RURAL_ROUTE.test(t) ? cleaned : null;
 }
 
-// "2", "#2", "option 2", "2.", "the 2nd one" -> 2. Anything else: null.
+const WORD_NUMBERS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
+
+// "2", "#2", "option #2", "2.", "the 2nd one", "two", "2️⃣" -> 2. Anything else: null.
 export function parseSlotNumber(text: string, count: number): number | null {
-  const t = text.normalize("NFKC").toLowerCase().trim();
-  const m = /^(?:(?:option|number|#|no\.?)\s*)?([1-9])(?:st|nd|rd|th)?(?:\s*(?:one|please|pls|works|is good|thanks?|ty))?\s*[.!)]*$/.exec(t);
-  const n = m ? Number(m[1]) : null;
-  return n !== null && n >= 1 && n <= count ? n : null;
+  const t = text
+    .normalize("NFKC")
+    .replace(/[\uFE0F\u20E3]/g, "")
+    .toLowerCase()
+    .trim();
+  const m =
+    /^(?:the )?(?:(?:option|number|choice|no\.?)\s*)?#?\s*([1-9]|one|two|three|four|five|first|second|third|fourth|fifth)(?:st|nd|rd|th)?(?:\s*(?:one|option|please|pls|works|is good|is fine|thanks?|ty))?\s*[.!)]*$/.exec(t);
+  if (!m) return null;
+  const raw = m[1] as string;
+  const n = WORD_NUMBERS[raw] ?? Number(raw);
+  return n >= 1 && n <= count ? n : null;
 }

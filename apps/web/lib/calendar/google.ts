@@ -36,8 +36,9 @@ export interface CalendarEvent {
 
 export interface CalendarClient {
   busy(from: Date, to: Date): Promise<BusyInterval[]>;
-  // "created", or "exists" if an event with this id is already there.
-  createEvent(event: CalendarEvent): Promise<"created" | "exists">;
+  // "created"; "exists" if an earlier attempt created it; "cancelled" if the
+  // owner has since deleted it (Google keeps deleted ids).
+  createEvent(event: CalendarEvent): Promise<"created" | "exists" | "cancelled">;
 }
 
 export function oauthClient(clientId: string, clientSecret: string, redirectUri: string): OAuth2Client {
@@ -95,8 +96,18 @@ export function createGoogleCalendar(
         });
         return "created";
       } catch (err) {
-        // Same id already exists: an earlier attempt booked it.
-        if (status(err) === 409) return "exists";
+        if (status(err) !== 409) throw mapError(err);
+      }
+      // Same id already exists: an earlier attempt booked it, unless the
+      // owner deleted it since.
+      try {
+        const res = await oauth.request<{ status?: string }>({
+          url: `${base}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(e.id)}`,
+          method: "GET",
+          timeout: 8_000,
+        });
+        return res.data.status === "cancelled" ? "cancelled" : "exists";
+      } catch (err) {
         throw mapError(err);
       }
     },

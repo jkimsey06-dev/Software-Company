@@ -136,6 +136,10 @@ const REASONS: Record<string, string> = {
   no_address: "They picked a time but we couldn't get an address. Please call them.",
   calendar_unavailable: "We couldn't reach your calendar to book. Please call to find a time.",
   calendar_revoked: "Your calendar connection has stopped working. Please call to find a time, and reconnect your calendar.",
+  slot_expired: "The times we offered had passed by the time they answered. Please call to find a time.",
+  event_cancelled: "The estimate for the time they picked had been deleted from your calendar. Please call to find a time.",
+  booking_uncertain: "We tried to book their estimate but couldn't confirm it went through.",
+  booked_unconfirmed: "We booked their estimate but couldn't confirm it with them by text.",
 };
 
 function reasonLine(reason: string): string {
@@ -174,6 +178,14 @@ export function renderConversationUpdateEmail(
     lines.push(`${caller} is ready for a call back. We told them you'll reach out to set up a time.`);
   } else {
     lines.push(`${caller} needs you to take over. ${reasonLine(update.reason)}`.trim());
+    if (update.booking) {
+      lines.push(
+        update.reason === "booking_uncertain"
+          ? `It may be on your calendar for ${update.booking.slot}. Check your calendar, then call them to confirm.`
+          : `It's on your calendar for ${update.booking.slot}, but they haven't been told. Call them to confirm, or remove it.`,
+      );
+      lines.push(`Address (as they wrote it): ${update.booking.address}`);
+    }
   }
   const d = update.details;
   if (d) {

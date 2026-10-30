@@ -159,5 +159,6 @@ export function getCalendarRouteDeps(): CalendarRouteDeps {
       return oauthClient(calendarEnv.googleClientId, calendarEnv.googleClientSecret, calendarEnv.redirectUri);
     },
     log,
+    opsAlert: getNotificationDeps()?.opsAlert ?? createOpsAlert(null, undefined, log),
   };
 }

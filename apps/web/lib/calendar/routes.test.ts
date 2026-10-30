@@ -14,8 +14,10 @@ const SECRET = "s".repeat(40);
 function setup(tokens: { refresh_token?: string; scope?: string } = { refresh_token: "1//rt", scope: CALENDAR_SCOPES.join(" ") }) {
   const saved: { tenantId: string; calendarId: string; enc: string }[] = [];
   const nonces = new Set<string>();
+  const alerts: string[] = [];
+  const existing: { current: Awaited<ReturnType<CalendarStore["getConnection"]>> } = { current: null };
   const store: CalendarStore = {
-    getConnection: async () => null,
+    getConnection: async () => existing.current,
     saveConnection: async (tenantId, calendarId, enc) => void saved.push({ tenantId, calendarId, enc }),
     markRevoked: async () => undefined,
     useLinkNonce: async (nonce) => (nonces.has(nonce) ? false : (nonces.add(nonce), true)),
@@ -31,8 +33,9 @@ function setup(tokens: { refresh_token?: string; scope?: string } = { refresh_to
     store,
     oauth: () => oauth,
     log: recordingLogger(),
+    opsAlert: async (event: string) => void alerts.push(event),
   };
-  return { deps, saved, authUrls, key };
+  return { deps, saved, authUrls, key, alerts, existing };
 }
 
 const connect = (token: string) => new Request(`https://app.example.com/api/calendar/connect?token=${encodeURIComponent(token)}`);
@@ -100,6 +103,30 @@ describe("callback", () => {
     expect((await callbackRoute(() => s.deps)(callback(token, "&error=access_denied"))).status).toBe(200);
     expect((await callbackRoute(() => s.deps)(callback(token))).status).toBe(200);
     expect(s.saved).toHaveLength(1);
+  });
+
+  it("a link issued before the current connection can't replace it", async () => {
+    const s = setup();
+    const old = createLinkToken(TENANT, SECRET, Date.now() - 3_600_000);
+    s.existing.current = { calendarId: "primary", refreshTokenEnc: "v1.x", status: "connected", connectedAt: new Date(Date.now() - 60_000) };
+    expect((await callbackRoute(() => s.deps)(callback(old))).status).toBe(400);
+    expect(s.saved).toHaveLength(0);
+  });
+
+  it("a newer link replaces a connection, and ops is told", async () => {
+    const s = setup();
+    s.existing.current = { calendarId: "primary", refreshTokenEnc: "v1.x", status: "connected", connectedAt: new Date(Date.now() - 3_600_000) };
+    expect((await callbackRoute(() => s.deps)(callback(createLinkToken(TENANT, SECRET)))).status).toBe(200);
+    expect(s.saved).toHaveLength(1);
+    expect(s.alerts).toEqual(["calendar.connection_replaced"]);
+  });
+
+  it("a database error while spending the link shows an error page", async () => {
+    const s = setup();
+    s.deps.store.useLinkNonce = async () => {
+      throw new Error("supabase down");
+    };
+    expect((await callbackRoute(() => s.deps)(callback(createLinkToken(TENANT, SECRET)))).status).toBe(500);
   });
 
   it("never logs or shows the token", async () => {

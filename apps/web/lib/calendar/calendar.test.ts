@@ -26,6 +26,14 @@ describe("token encryption", () => {
     expect(() => decryptToken(parts.join("."), key, TENANT)).toThrow();
   });
 
+  it("rejects a truncated auth tag or extra parts", () => {
+    const sealed = encryptToken("1//refresh-token", key, TENANT);
+    const parts = sealed.split(".");
+    const short = [parts[0], parts[1], Buffer.from(parts[2]!, "base64url").subarray(0, 4).toString("base64url"), parts[3]].join(".");
+    expect(() => decryptToken(short, key, TENANT)).toThrow();
+    expect(() => decryptToken(`${sealed}.extra`, key, TENANT)).toThrow();
+  });
+
   it("requires a 32-byte key", () => {
     expect(() => parseKey(undefined)).toThrow();
     expect(() => parseKey(randomBytes(16).toString("base64"))).toThrow();
