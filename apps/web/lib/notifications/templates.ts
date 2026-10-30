@@ -168,7 +168,7 @@ export function renderConversationUpdateEmail(
   const d = update.details;
   if (d) {
     const service = config.services.find((s) => s.id === d.serviceId)?.name;
-    lines.push("", `Service: ${service ?? "not given"}`, `Area: ${d.area ?? "not given"}${inServiceArea(config, d.area) === false ? " (may be outside your area)" : ""}`, `Urgency: ${d.urgency}`);
+    lines.push("", `Service: ${service ?? "not given"}`, `Area (as they wrote it): ${d.area ?? "not given"}${inServiceArea(config, d.area) === false ? " (may be outside your area)" : ""}`, `Urgency: ${d.urgency}`);
   }
   if (update.thread.length) {
     lines.push("", "Conversation:");

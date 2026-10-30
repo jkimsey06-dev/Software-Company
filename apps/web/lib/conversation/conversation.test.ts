@@ -350,6 +350,24 @@ describe("outages and failures", () => {
     expect(await forwardUnhandledMessages(s.store, loadConfig, s.deps.notifications)).toBe(0);
   });
 
+  it("if the owner email can't be queued, the message isn't marked handled (so it gets forwarded)", async () => {
+    const s = setup();
+    s.model.categories.push("wants_human");
+    (s.deps.notifications.store as unknown as { failEnqueue: boolean }).failEnqueue = true;
+    await expect(s.say("let me talk to the owner")).rejects.toThrow();
+    expect(s.store.turns).toHaveLength(0);
+    expect(s.alerts.map((a) => a.event)).toContain("conversation.notify_failed");
+  });
+
+  it("a second emergency text doesn't send a second 911 text or owner alert, but the owner gets each email", async () => {
+    const s = setup();
+    await s.say("I smell gas");
+    await s.say("gas smell is getting worse!!");
+    expect(s.sender.sent.filter((m) => m.to === CALLER)).toHaveLength(1);
+    expect(s.sender.sent.filter((m) => m.to === OWNER_PHONE)).toHaveLength(1);
+    expect(s.email.sent.filter((e) => e.subject.startsWith("EMERGENCY"))).toHaveLength(2);
+  });
+
   it("never logs what the customer said", async () => {
     const s = setup();
     await s.say("my address is 12 Main St");

@@ -110,6 +110,9 @@ export function getSmsRouteDeps(): SmsRouteDeps {
         // Not handled (or failed): the owner sees the text.
         if (!handled && config && notifyReply) {
           notifyReply({ ...message, config, callerPhone: message.customerPhone, optedOut: false });
+        } else if (!handled) {
+          // No config (or no email set up): nobody was told. Say so loudly.
+          await opsAlert("conversation.owner_not_told", { tenantId: message.tenantId, messageSid: message.messageSid });
         }
       });
 

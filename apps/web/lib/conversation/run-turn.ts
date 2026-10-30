@@ -280,8 +280,8 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
     // Last checks before texting: they may have just replied STOP, or an
     // emergency may have handed the conversation off.
     if (await store.isOptedOut(tenantId, phone)) {
-      await store.recordTurns(turns("opted_out", "opted_out"));
       await finish(msg, conversation, "handed_off", "opted_out", details, deps);
+      await store.recordTurns(turns("opted_out", "opted_out"));
       return true;
     }
     const now = await store.startConversation(tenantId, phone, msg.leadId);
@@ -290,20 +290,23 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
     const sent = await sendText(msg, `conversation-reply:${newest.messageSid}`, phone, renderFixedMessageV1(message, config), deps);
     outboundId = sent.id;
     if (!sent.delivered) {
-      await store.recordTurns(turns("send_failed", sent.code, outboundId));
       await finish(msg, conversation, "handed_off", "send_failed", details, deps);
+      await store.recordTurns(turns("send_failed", sent.code, outboundId));
       return true;
     }
   }
 
-  await store.recordTurns(turns(outcome.action, "reason" in outcome ? outcome.reason : undefined, outboundId));
-  log("conversation.turn", { ...ctx, action: outcome.action, category: outcome.category ?? "none", merged: sids.length - 1 });
-
   if (outcome.action === "ask") {
+    await store.recordTurns(turns("ask", undefined, outboundId));
     await store.incrementAiReplies(conversationId);
+    log("conversation.turn", { ...ctx, action: "ask", category: outcome.category ?? "none", merged: sids.length - 1 });
     return false; // look for messages that arrived meanwhile
   }
+  // The owner email is queued before the turn is recorded: if it can't be,
+  // the message stays unhandled and is forwarded instead (never lost).
   await finish(msg, conversation, outcome.action === "complete" ? "completed" : "handed_off", outcome.reason, details, deps);
+  await store.recordTurns(turns(outcome.action, outcome.reason, outboundId));
+  log("conversation.turn", { ...ctx, action: outcome.action, category: outcome.category ?? "none", merged: sids.length - 1 });
   return true;
 }
 
@@ -371,7 +374,8 @@ async function handleEmergency(
   // 911 text to the customer, wherever texting them is allowed.
   let outboundId: string | null = null;
   if (await canTextCustomer(msg, deps)) {
-    const sent = await sendText(msg, `emergency-reply:${sid}`, msg.customerPhone, renderFixedMessageV1({ kind: "emergency" }, config), deps);
+    // Once per conversation: a second "gas!!" text doesn't send a second copy.
+    const sent = await sendText(msg, `emergency-reply:${conversation.id}`, msg.customerPhone, renderFixedMessageV1({ kind: "emergency" }, config), deps);
     outboundId = sent.id;
   }
 
@@ -380,7 +384,7 @@ async function handleEmergency(
   if (textingOk && !(await store.isOptedOut(tenantId, ownerPhone))) {
     const sent = await sendText(
       msg,
-      `emergency-alert:${sid}`,
+      `emergency-alert:${conversation.id}`,
       ownerPhone,
       renderOwnerEmergencySms(config, { callerPhone: msg.customerPhone }),
       deps,
@@ -390,6 +394,10 @@ async function handleEmergency(
     }
   }
 
+  if (conversation.status !== "handed_off") await store.setStatus(conversation.id, "handed_off", "emergency");
+  // Every emergency text reaches the owner's inbox; queued before the turn is
+  // recorded so a failure leaves the message to be forwarded.
+  await emailOwner(msg, conversation, "emergency", category, conversation.details, `emergency:${sid}`, deps);
   await store.recordTurns(
     sids.map((s) => ({
       tenantId,
@@ -401,9 +409,7 @@ async function handleEmergency(
       outboundMessageId: s === sid ? outboundId : null,
     })),
   );
-  if (conversation.status !== "handed_off") await store.setStatus(conversation.id, "handed_off", "emergency");
   log("conversation.emergency", { tenantId, conversationId: conversation.id, messageSid: sid, category });
-  await emailOwner(msg, conversation, "emergency", category, conversation.details, `emergency:${sid}`, deps);
 }
 
 async function emailOwner(
@@ -441,6 +447,8 @@ async function emailOwner(
   } catch (err) {
     log("conversation.notify_failed", { tenantId, conversationId: conversation.id, error: errorLabel(err) });
     await notifications.opsAlert("conversation.notify_failed", { tenantId, conversationId: conversation.id });
+    // Not swallowed: the message stays unhandled and is forwarded to the owner.
+    throw err;
   }
 }
 
