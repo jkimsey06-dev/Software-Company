@@ -105,26 +105,23 @@ export class FakeStore implements MissedCallStore {
     return this.optOuts.has(`${tenantId}:${phone}`);
   }
 
-  // Ignores the time window: every message in a test counts as recent.
-  async hasRecentTextback(tenantId: string, phone: string) {
-    this.maybeFail("hasRecentTextback");
-    return [...this.messages.values()].some(
-      (m) =>
-        m.tenantId === tenantId &&
-        m.toPhone === phone &&
-        m.idempotencyKey.startsWith("missed-call-textback:") &&
-        m.status !== "failed",
-    );
-  }
-
   async addOptOut(tenantId: string, phone: string) {
     this.optOuts.add(`${tenantId}:${phone}`);
   }
 
-  async claimOutboundMessage(message: NewOutboundMessage) {
-    this.maybeFail("claimOutboundMessage");
+  // Mirrors claim_missed_call_textback. Ignores the time window: every message
+  // in a test counts as recent.
+  async claimTextback(message: NewOutboundMessage) {
+    this.maybeFail("claimTextback");
     const key = `${message.tenantId}:${message.idempotencyKey}`;
-    if (this.messages.has(key)) return null;
+    const recent = [...this.messages.values()].some(
+      (m) =>
+        m.tenantId === message.tenantId &&
+        m.toPhone === message.toPhone &&
+        m.idempotencyKey.startsWith("missed-call-textback:") &&
+        m.status !== "failed",
+    );
+    if (this.messages.has(key) || recent) return null;
     const id = `msg-${this.messages.size + 1}`;
     this.messages.set(key, { ...message, id, status: "pending" });
     return id;

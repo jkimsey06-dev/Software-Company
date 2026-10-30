@@ -123,3 +123,98 @@ create policy outbound_messages_select_member
 create policy opt_outs_select_member
   on public.opt_outs for select to authenticated
   using (private.is_tenant_member(tenant_id));
+
+-- Race-free helpers for the webhook ------------------------------------------------
+-- Two webhooks for the same caller can run at once (redials, two numbers). Each
+-- helper takes a transaction lock on (tenant, phone) so check-then-insert is atomic.
+-- Server only: callable by the service role, not by users.
+
+create function public.find_or_create_missed_call_lead(
+  p_tenant_id uuid,
+  p_phone text,
+  p_reuse_since timestamptz
+)
+returns uuid
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_lead_id uuid;
+begin
+  perform pg_advisory_xact_lock(hashtextextended('lead:' || p_tenant_id || ':' || p_phone, 0));
+
+  select id into v_lead_id
+  from public.leads
+  where tenant_id = p_tenant_id
+    and phone = p_phone
+    and status in ('new', 'contacted')
+    and created_at >= p_reuse_since
+  order by created_at desc
+  limit 1;
+
+  if v_lead_id is null then
+    insert into public.leads (tenant_id, phone, source)
+    values (p_tenant_id, p_phone, 'missed_call')
+    returning id into v_lead_id;
+  end if;
+
+  return v_lead_id;
+end;
+$$;
+
+-- Returns the new message id, or null if this call already has a text-back or
+-- the caller got one since p_cooldown_since. Never send when it returns null.
+create function public.claim_missed_call_textback(
+  p_tenant_id uuid,
+  p_idempotency_key text,
+  p_lead_id uuid,
+  p_to_phone text,
+  p_from_phone text,
+  p_body text,
+  p_template_version text,
+  p_cooldown_since timestamptz
+)
+returns uuid
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_id uuid;
+begin
+  perform pg_advisory_xact_lock(hashtextextended('textback:' || p_tenant_id || ':' || p_to_phone, 0));
+
+  if exists (
+    select 1 from public.outbound_messages
+    where tenant_id = p_tenant_id
+      and (
+        idempotency_key = p_idempotency_key
+        or (
+          to_phone = p_to_phone
+          and idempotency_key like 'missed-call-textback:%'
+          -- 'failed' = Twilio refused it, nothing reached the caller.
+          and status in ('pending', 'sent', 'unknown')
+          and created_at >= p_cooldown_since
+        )
+      )
+  ) then
+    return null;
+  end if;
+
+  insert into public.outbound_messages
+    (tenant_id, idempotency_key, lead_id, to_phone, from_phone, body, template_version)
+  values
+    (p_tenant_id, p_idempotency_key, p_lead_id, p_to_phone, p_from_phone, p_body, p_template_version)
+  returning id into v_id;
+
+  return v_id;
+end;
+$$;
+
+revoke all on function public.find_or_create_missed_call_lead(uuid, text, timestamptz)
+  from public, anon, authenticated;
+revoke all on function public.claim_missed_call_textback(uuid, text, uuid, text, text, text, text, timestamptz)
+  from public, anon, authenticated;
+grant execute on function public.find_or_create_missed_call_lead(uuid, text, timestamptz)
+  to service_role;
+grant execute on function public.claim_missed_call_textback(uuid, text, uuid, text, text, text, text, timestamptz)
+  to service_role;

@@ -157,21 +157,21 @@ export async function handleDialStatus(
   if (await store.isOptedOut(tenantId, fromPhone)) return skip("opted_out");
 
   const body = renderMissedCallTextbackV1(config);
-  const idempotencyKey = `missed-call-textback:${call.callSid}`;
-  const cooldownStart = new Date(Date.now() - config.messaging.textbackCooldownHours * 3_600_000);
-  if (await store.hasRecentTextback(tenantId, fromPhone, cooldownStart)) {
-    return skip("cooldown");
-  }
-  const messageId = await store.claimOutboundMessage({
-    tenantId,
-    idempotencyKey,
-    leadId,
-    toPhone: fromPhone,
-    fromPhone: sendFrom,
-    body,
-    templateVersion: MISSED_CALL_TEXTBACK_V1,
-  });
-  if (!messageId) return skip("already_claimed");
+  const cooldownSince = new Date(Date.now() - config.messaging.textbackCooldownHours * 3_600_000);
+  const messageId = await store.claimTextback(
+    {
+      tenantId,
+      idempotencyKey: `missed-call-textback:${call.callSid}`,
+      leadId,
+      toPhone: fromPhone,
+      fromPhone: sendFrom,
+      body,
+      templateVersion: MISSED_CALL_TEXTBACK_V1,
+    },
+    cooldownSince,
+  );
+  // Already texted for this call, or within the cooldown.
+  if (!messageId) return skip("already_texted");
 
   let sid: string;
   try {

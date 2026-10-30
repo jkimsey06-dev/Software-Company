@@ -46,12 +46,11 @@ export interface MissedCallStore {
   findOrCreateMissedCallLead(tenantId: string, phone: string): Promise<string>;
   linkCallToLead(tenantId: string, callSid: string, leadId: string): Promise<void>;
   isOptedOut(tenantId: string, phone: string): Promise<boolean>;
-  // True if a text-back to this phone was sent (or may have been) since the given time.
-  hasRecentTextback(tenantId: string, phone: string, since: Date): Promise<boolean>;
   addOptOut(tenantId: string, phone: string, source: "carrier"): Promise<void>;
-  // Inserts the message row if its idempotency key is new. Returns the row id,
-  // or null if another request already claimed it (never send in that case).
-  claimOutboundMessage(message: NewOutboundMessage): Promise<string | null>;
+  // Atomically inserts the message row unless this idempotency key exists or the
+  // caller already got a text-back (pending, sent or unknown) since cooldownSince.
+  // Returns the row id, or null; never send when it returns null.
+  claimTextback(message: NewOutboundMessage, cooldownSince: Date): Promise<string | null>;
   markMessage(id: string, update: MessageUpdate): Promise<void>;
 }
 

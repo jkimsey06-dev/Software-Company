@@ -158,6 +158,17 @@ begin
       null;
     end;
   end loop;
+  foreach stmt in array array[
+    'select public.find_or_create_missed_call_lead(''10000000-0000-0000-0000-0000000000c1'', ''+14235550398'', now())',
+    'select public.claim_missed_call_textback(''10000000-0000-0000-0000-0000000000c1'', ''k'', null, ''+14235550398'', ''+14235550300'', ''Hi'', ''v1'', now())'
+  ] loop
+    begin
+      execute stmt;
+      raise exception 'FAIL: user was allowed: %', stmt;
+    exception when insufficient_privilege then
+      null;
+    end;
+  end loop;
   raise notice 'ok - users cannot write missed-call tables';
 end;
 $$;
@@ -179,7 +190,68 @@ begin
       null;
     end;
   end loop;
+  begin
+    perform public.find_or_create_missed_call_lead('10000000-0000-0000-0000-0000000000c1', '+14235550398', now());
+    raise exception 'FAIL: anon can call find_or_create_missed_call_lead';
+  exception when insufficient_privilege then
+    null;
+  end;
   raise notice 'ok - anon cannot read missed-call tables';
+end;
+$$;
+
+reset role;
+
+set role service_role;
+
+-- Race-free helpers (as the service role) -----------------------------------------
+
+do $$
+declare
+  first_lead uuid;
+  second_lead uuid;
+  msg uuid;
+begin
+  first_lead := public.find_or_create_missed_call_lead(
+    '10000000-0000-0000-0000-0000000000c1', '+14235550350', now() - interval '24 hours');
+  second_lead := public.find_or_create_missed_call_lead(
+    '10000000-0000-0000-0000-0000000000c1', '+14235550350', now() - interval '24 hours');
+  if first_lead is null or first_lead <> second_lead then
+    raise exception 'FAIL: repeat caller got a second open lead';
+  end if;
+
+  msg := public.claim_missed_call_textback(
+    '10000000-0000-0000-0000-0000000000c1', 'missed-call-textback:CA' || repeat('1', 32), first_lead,
+    '+14235550350', '+14235550300', 'Hi', 'missed-call-textback@v1', now() - interval '24 hours');
+  if msg is null then
+    raise exception 'FAIL: first text-back was not claimed';
+  end if;
+  if public.claim_missed_call_textback(
+    '10000000-0000-0000-0000-0000000000c1', 'missed-call-textback:CA' || repeat('1', 32), first_lead,
+    '+14235550350', '+14235550300', 'Hi', 'missed-call-textback@v1', now() - interval '24 hours') is not null then
+    raise exception 'FAIL: same call claimed twice';
+  end if;
+  if public.claim_missed_call_textback(
+    '10000000-0000-0000-0000-0000000000c1', 'missed-call-textback:CA' || repeat('2', 32), first_lead,
+    '+14235550350', '+14235550300', 'Hi', 'missed-call-textback@v1', now() - interval '24 hours') is not null then
+    raise exception 'FAIL: second call within cooldown was claimed';
+  end if;
+
+  -- A refused text doesn't start the cooldown.
+  update public.outbound_messages set status = 'failed' where id = msg;
+  if public.claim_missed_call_textback(
+    '10000000-0000-0000-0000-0000000000c1', 'missed-call-textback:CA' || repeat('3', 32), first_lead,
+    '+14235550350', '+14235550300', 'Hi', 'missed-call-textback@v1', now() - interval '24 hours') is null then
+    raise exception 'FAIL: a failed text blocked the next text-back';
+  end if;
+
+  -- Cooldown is per tenant: tenant D texting the same phone is unaffected.
+  if public.claim_missed_call_textback(
+    '10000000-0000-0000-0000-0000000000d1', 'missed-call-textback:CA' || repeat('4', 32), null,
+    '+14235550350', '+14235550400', 'Hi', 'missed-call-textback@v1', now() - interval '24 hours') is null then
+    raise exception 'FAIL: cooldown leaked across tenants';
+  end if;
+  raise notice 'ok - lead reuse and text-back cooldown are enforced in the database';
 end;
 $$;
 

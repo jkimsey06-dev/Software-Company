@@ -41,7 +41,8 @@
 | Same webhook delivered twice | Second one does nothing. |
 | Twilio rejects the text (4xx) | Message marked `failed`. Not retried. Error 21610 also records an opt-out. |
 | Twilio times out / 5xx | Message marked `unknown`. **Never retried automatically**: it may have been sent. Review by hand. |
-| Our database is down during the dial-status webhook | Call ends cleanly, nothing sent, error logged. A repeat of the same webhook picks up where it stopped. |
+| Our database is down during the dial-status webhook | Call ends cleanly, nothing sent, `dial_status.error` logged. Twilio does not retry, so **the lead is lost** until owner alerts land (next PR). Search logs for `dial_status.error` daily. |
+| Same caller, two overlapping calls | Postgres lock per (tenant, phone): one lead, at most one text. |
 | Text sent but recording it fails | Text is not resent. Row stays `pending`; see below. |
 
 ## Checking on failures

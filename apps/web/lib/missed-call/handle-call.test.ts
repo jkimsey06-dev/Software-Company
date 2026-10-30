@@ -195,7 +195,7 @@ describe("handleDialStatus", () => {
 
   it("does not send if the database is down before the message is claimed", async () => {
     const store = new FakeStore();
-    store.failOn.add("claimOutboundMessage");
+    store.failOn.add("claimTextback");
     const { sender, deps } = setup(store);
     await expect(handleDialStatus(missedCall(), deps)).rejects.toThrow();
     expect(sender.sent).toHaveLength(0);

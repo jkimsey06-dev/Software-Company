@@ -138,30 +138,16 @@ export function createSupabaseStore(db: SupabaseClient, log: Logger): MissedCall
     },
 
     async findOrCreateMissedCallLead(tenantId, phone) {
-      const since = new Date(Date.now() - LEAD_REUSE_WINDOW_MS).toISOString();
-      const existing = required(
-        await db
-          .from("leads")
-          .select("id")
-          .eq("tenant_id", tenantId)
-          .eq("phone", phone)
-          .in("status", ["new", "contacted"])
-          .gte("created_at", since)
-          .order("created_at", { ascending: false })
-          .limit(1),
-        "find open lead",
+      // Locked per (tenant, phone) in the database, so concurrent webhooks share one lead.
+      const leadId = required(
+        await db.rpc("find_or_create_missed_call_lead", {
+          p_tenant_id: tenantId,
+          p_phone: phone,
+          p_reuse_since: new Date(Date.now() - LEAD_REUSE_WINDOW_MS).toISOString(),
+        }),
+        "find or create lead",
       );
-      if (existing[0]) return existing[0].id as string;
-
-      const created = required(
-        await db
-          .from("leads")
-          .insert({ tenant_id: tenantId, phone, source: "missed_call" })
-          .select("id")
-          .single(),
-        "create lead",
-      );
-      return created.id as string;
+      return leadId as string;
     },
 
     async linkCallToLead(tenantId, callSid, leadId) {
@@ -188,23 +174,6 @@ export function createSupabaseStore(db: SupabaseClient, log: Logger): MissedCall
       return rows.length > 0;
     },
 
-    async hasRecentTextback(tenantId, phone, since) {
-      // 'failed' doesn't count: Twilio refused it, so nothing reached the caller.
-      const rows = required(
-        await db
-          .from("outbound_messages")
-          .select("id")
-          .eq("tenant_id", tenantId)
-          .eq("to_phone", phone)
-          .like("idempotency_key", "missed-call-textback:%")
-          .in("status", ["pending", "sent", "unknown"])
-          .gte("created_at", since.toISOString())
-          .limit(1),
-        "check recent text-back",
-      );
-      return rows.length > 0;
-    },
-
     async addOptOut(tenantId, phone, source) {
       check(
         await db
@@ -217,26 +186,23 @@ export function createSupabaseStore(db: SupabaseClient, log: Logger): MissedCall
       );
     },
 
-    async claimOutboundMessage(message) {
-      const rows = required(
-        await db
-          .from("outbound_messages")
-          .upsert(
-            {
-              tenant_id: message.tenantId,
-              idempotency_key: message.idempotencyKey,
-              lead_id: message.leadId,
-              to_phone: message.toPhone,
-              from_phone: message.fromPhone,
-              body: message.body,
-              template_version: message.templateVersion,
-            },
-            { onConflict: "tenant_id,idempotency_key", ignoreDuplicates: true },
-          )
-          .select("id"),
-        "claim outbound message",
+    async claimTextback(message, cooldownSince) {
+      // Locked per (tenant, phone) in the database: the cooldown check and the
+      // insert happen together, so two overlapping calls can't both be texted.
+      const id = check(
+        await db.rpc("claim_missed_call_textback", {
+          p_tenant_id: message.tenantId,
+          p_idempotency_key: message.idempotencyKey,
+          p_lead_id: message.leadId,
+          p_to_phone: message.toPhone,
+          p_from_phone: message.fromPhone,
+          p_body: message.body,
+          p_template_version: message.templateVersion,
+          p_cooldown_since: cooldownSince.toISOString(),
+        }),
+        "claim text-back",
       );
-      return (rows[0]?.id as string | undefined) ?? null;
+      return (id as string | null) ?? null;
     },
 
     async markMessage(id, update) {
