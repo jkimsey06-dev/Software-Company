@@ -31,5 +31,6 @@
     }
   ],
   "messaging": { "a2pStatus": "not_started" },
+  "calls": { "forwardToNumber": "+14235550100" },
   "calendar": { "provider": "google" }
 }

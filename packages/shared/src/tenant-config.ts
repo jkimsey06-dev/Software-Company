@@ -75,7 +75,14 @@ const messaging = z.object({
   fromNumber: phoneE164.optional(),
   aiDisclosureAtStart: z.boolean().default(true),
   optOutText: z.string().min(1).max(100).default("Reply STOP to opt out"),
-  textBackDelaySeconds: z.number().int().min(0).max(300).default(15),
+});
+
+const calls = z.object({
+  // Inbound calls ring this phone first; unanswered calls trigger the text-back.
+  forwardToNumber: phoneE164,
+  // Keep this shorter than the owner's carrier voicemail pickup (~25s), or
+  // voicemail answers and the call looks "answered".
+  ringSeconds: z.number().int().min(10).max(40).default(18),
 });
 
 const calendar = z.object({
@@ -107,6 +114,7 @@ export const tenantConfigSchema = z.object({
   }),
   knowledgeBase: z.array(knowledgeBaseEntry).default([]),
   messaging,
+  calls,
   calendar,
 }).superRefine((c, ctx) => {
   for (const [key, items] of [["services", c.services], ["knowledgeBase", c.knowledgeBase]] as const) {

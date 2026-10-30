@@ -12,9 +12,13 @@
   },
   "dependencies": {
     "@sc/shared": "workspace:*",
+    "@supabase/supabase-js": "2.118.0",
     "next": "16.0.11",
     "react": "19.2.9",
-    "react-dom": "19.2.9"
+    "react-dom": "19.2.9",
+    "twilio": "6.2.0",
+    "@sc/ai": "workspace:*",
+    "zod": "4.1.12"
   },
   "devDependencies": {
     "@types/node": "22.19.1",
