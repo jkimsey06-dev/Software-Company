@@ -4,7 +4,13 @@ import { LEAD_URGENCIES, type TenantConfig } from "@sc/shared";
 import { z } from "zod";
 import { LEAD_UNDERSTANDING_V1, buildUnderstandingSystemV1 } from "../prompts/lead-understanding.v1";
 import { SAFETY_CLASSIFIER_SYSTEM_V1, SAFETY_CLASSIFIER_V1 } from "../prompts/safety-classifier.v1";
-import { cleanArea } from "./service-area";
+import {
+  ADDRESS_EXTRACTION_SYSTEM_V1,
+  ADDRESS_EXTRACTION_V1,
+  SLOT_CHOICE_SYSTEM_V1,
+  SLOT_CHOICE_V1,
+} from "../prompts/booking.v1";
+import { cleanAddress, cleanArea } from "./service-area";
 import {
   ModelUnavailableError,
   SAFETY_CATEGORIES,
@@ -18,6 +24,8 @@ export const CONVERSATION_MODEL = "claude-sonnet-5-5";
 export const CLASSIFIER_MODEL = "claude-haiku-5-5";
 
 const ClassificationSchema = z.object({ category: z.enum(SAFETY_CATEGORIES) });
+const SlotChoiceSchema = z.object({ choice: z.number().int().nullable(), wants_other_time: z.boolean() });
+const AddressSchema = z.object({ address: z.string().nullable() });
 
 const UnderstandingSchema = z.object({
   service_id: z.string().nullable(),
@@ -131,6 +139,56 @@ export function createClaudeConversationModel(
             inputTokens: response.usage.input_tokens,
             outputTokens: response.usage.output_tokens,
           },
+        };
+      } catch (err) {
+        throw toUnavailable(err);
+      }
+    },
+
+    async chooseSlot({ latest, options }) {
+      try {
+        const response = await client.messages.parse({
+          model: CLASSIFIER_MODEL,
+          max_tokens: 1000,
+          system: SLOT_CHOICE_SYSTEM_V1,
+          output_config: { effort: "low", format: zodOutputFormat(SlotChoiceSchema) },
+          messages: [
+            {
+              role: "user",
+              content: `<options>\n${options.map((o, i) => `${i + 1}) ${o}`).join("\n")}\n</options>\n\n<customer>${escapeCustomer(latest)}</customer>`,
+            },
+          ],
+        });
+        if (response.stop_reason === "refusal") throw new ModelUnavailableError("refusal");
+        if (response.stop_reason === "max_tokens") throw new ModelUnavailableError("max_tokens");
+        const out = response.parsed_output;
+        if (!out) throw new ModelUnavailableError("invalid_output");
+        const valid = out.choice !== null && out.choice >= 1 && out.choice <= options.length;
+        return {
+          result: { choice: valid ? out.choice : null, wantsOtherTime: out.wants_other_time },
+          info: { model: CLASSIFIER_MODEL, promptVersion: SLOT_CHOICE_V1, inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens },
+        };
+      } catch (err) {
+        throw toUnavailable(err);
+      }
+    },
+
+    async extractAddress({ latest }) {
+      try {
+        const response = await client.messages.parse({
+          model: CLASSIFIER_MODEL,
+          max_tokens: 1000,
+          system: ADDRESS_EXTRACTION_SYSTEM_V1,
+          output_config: { effort: "low", format: zodOutputFormat(AddressSchema) },
+          messages: [{ role: "user", content: `<customer>${escapeCustomer(latest)}</customer>` }],
+        });
+        if (response.stop_reason === "refusal") throw new ModelUnavailableError("refusal");
+        if (response.stop_reason === "max_tokens") throw new ModelUnavailableError("max_tokens");
+        const out = response.parsed_output;
+        if (!out) throw new ModelUnavailableError("invalid_output");
+        return {
+          address: cleanAddress(out.address),
+          info: { model: CLASSIFIER_MODEL, promptVersion: ADDRESS_EXTRACTION_V1, inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens },
         };
       } catch (err) {
         throw toUnavailable(err);

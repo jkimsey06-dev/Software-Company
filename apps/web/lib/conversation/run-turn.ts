@@ -19,6 +19,7 @@ import {
   renderOwnerEmergencySms,
   type ConversationOutcome,
 } from "../notifications/templates";
+import { planAddressAndBook, planChoice, planOffer, type BookingPlan } from "./booking";
 import type {
   Conversation,
   ConversationDeps,
@@ -37,6 +38,7 @@ const DEFAULT_LEASE_WAIT_MS = 20_000;
 const NANP = /^\+1[2-9]\d{9}$/;
 const TWILIO_UNSUBSCRIBED = "21610";
 const DISCLOSURE_START = "Yes, I'm an AI assistant";
+const ADDRESS_AGAIN_START = "Sorry, I didn't catch that. What's the street address";
 
 type Outcome =
   | { action: "ask"; message: FixedMessage; details: LeadDetails; info?: ModelCallInfo; category?: string }
@@ -48,7 +50,8 @@ type Outcome =
       category?: string;
     }
   | { action: "skipped"; reason: string; category: string; info?: ModelCallInfo }
-  | { action: "emergency"; category: string };
+  | { action: "emergency"; category: string }
+  | { action: "booking"; plan: BookingPlan; details?: LeadDetails; info?: ModelCallInfo; category?: string };
 
 // Called after the SMS webhook has answered Twilio. Returns true when this
 // message was handled (answered, or the owner was told); false means the
@@ -150,6 +153,8 @@ function nextQuestion(config: TenantConfig, d: LeadDetails): Question | null {
 }
 
 async function decide(
+  msg: CustomerMessage,
+  askedAddressAgain: boolean,
   latest: string,
   history: Turn[],
   conversation: Conversation,
@@ -177,6 +182,20 @@ async function decide(
   if (category === "wrong_number" || category === "spam") return { action: "skipped", reason: category, category };
   if (conversation.aiReplies >= MAX_AI_REPLIES) return { action: "turn_limit", reason: "turn_limit", category };
 
+  // Booking stages: the customer is picking a time or giving the address.
+  const stage = conversation.booking.stage;
+  if (stage === "choosing_time" || stage === "asking_address") {
+    try {
+      const plan =
+        stage === "choosing_time"
+          ? await planChoice(msg, conversation, latest, model, deps)
+          : await planAddressAndBook(msg, conversation, latest, askedAddressAgain, model, deps);
+      return { action: "booking", plan, info: plan.info, category };
+    } catch (err) {
+      return { ...unavailable("booking", err), category } as Outcome;
+    }
+  }
+
   let understood;
   try {
     understood = await model.understand({ history, latest, known: conversation.details });
@@ -198,7 +217,11 @@ async function decide(
   }
 
   const question = nextQuestion(config, details);
-  if (!question) return { action: "complete", reason: "complete", details, info, category };
+  if (!question) {
+    // All details known: offer times from the owner's calendar when we can.
+    const plan = await planOffer(msg, { ...conversation, details }, deps);
+    return { action: "booking", plan, details, info, category };
+  }
   const prefix =
     asksIfAi(latest) && !disclosedAlready
       ? ("ai_disclosure" as const)
@@ -236,7 +259,8 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
   const model = deps.modelFor(config);
   if (!model) return true;
   const disclosed = thread.some((m) => m.from === "business" && m.text.startsWith(DISCLOSURE_START));
-  const outcome = await decide(latest, history, conversation, config, model, disclosed, deps, ctx);
+  const askedAgain = thread.some((m) => m.from === "business" && m.text.startsWith(ADDRESS_AGAIN_START));
+  const outcome = await decide(msg, askedAgain, latest, history, conversation, config, model, disclosed, deps, ctx);
   const info = "info" in outcome ? outcome.info : undefined;
   const turns = (action: TurnAction, reason?: string, outboundMessageId?: string | null): TurnRecord[] =>
     sids.map((sid) => ({
@@ -271,7 +295,9 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
   const message: FixedMessage | null =
     outcome.action === "ask"
       ? outcome.message
-      : outcome.action === "skipped"
+      : outcome.action === "booking"
+        ? outcome.plan.message
+        : outcome.action === "skipped"
         ? null
         : { kind: outcome.action === "complete" ? "complete" : outcome.action === "turn_limit" ? "turn_limit" : outcome.action === "out_of_area" ? "out_of_area" : outcome.action === "unlisted_service" ? "unlisted_service" : outcome.action === "handoff" ? "handoff" : "fallback" };
 
@@ -296,6 +322,21 @@ async function takeTurn(msg: CustomerMessage, conversationId: string, deps: Conv
     }
   }
 
+  if (outcome.action === "booking") {
+    const { plan } = outcome;
+    await plan.apply?.();
+    if (plan.terminal) {
+      const t = plan.terminal;
+      await finish(msg, conversation, t.status, t.reason, details ?? conversation.details, deps, t.outcome, t.booking);
+      await store.recordTurns(turns(plan.action, plan.reason, outboundId));
+    } else {
+      await store.recordTurns(turns(plan.action, plan.reason, outboundId));
+      await store.incrementAiReplies(conversationId);
+    }
+    log("conversation.turn", { ...ctx, action: plan.action, category: outcome.category ?? "none", merged: sids.length - 1 });
+    return Boolean(plan.terminal);
+  }
+
   if (outcome.action === "ask") {
     await store.recordTurns(turns("ask", undefined, outboundId));
     await store.incrementAiReplies(conversationId);
@@ -317,9 +358,11 @@ async function finish(
   reason: string,
   details: LeadDetails | undefined,
   deps: ConversationDeps,
+  outcome: ConversationOutcome = status === "completed" ? "complete" : "needs_you",
+  booking?: { slot: string; address: string },
 ): Promise<void> {
   await deps.store.setStatus(conversation.id, status, reason);
-  await emailOwner(msg, conversation, status === "completed" ? "complete" : "needs_you", reason, details, `conversation-update:${conversation.id}:${status}`, deps);
+  await emailOwner(msg, conversation, outcome, reason, details, `conversation-update:${conversation.id}:${outcome}`, deps, booking);
 }
 
 // Claim, send, record: the same never-twice pattern as the text-back.
@@ -420,6 +463,7 @@ async function emailOwner(
   details: LeadDetails | undefined,
   key: string,
   deps: ConversationDeps,
+  booking?: { slot: string; address: string },
 ): Promise<void> {
   const { store, log, notifications } = deps;
   const { tenantId, config } = msg;
@@ -432,11 +476,12 @@ async function emailOwner(
       outcome,
       reason,
       details,
+      booking,
       thread: thread.slice(-12),
     });
     const id = await notifications.store.enqueue({
       tenantId,
-      kind: outcome === "emergency" ? "emergency" : "conversation_update",
+      kind: outcome === "emergency" ? "emergency" : outcome === "booked" ? "estimate_booked" : "conversation_update",
       idempotencyKey: key,
       leadId: msg.leadId,
       recipientEmail: to,

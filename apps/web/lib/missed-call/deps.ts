@@ -3,6 +3,11 @@ import { createNotificationStore } from "../notifications/supabase-store";
 import { readNotificationEnv } from "../notifications/env";
 import { createOpsAlert } from "../notifications/ops-alert";
 import { createClaudeConversationModel } from "@sc/ai";
+import { createCalendarAccess, createRevokedHandler } from "../calendar/access";
+import { readCalendarEnv } from "../calendar/env";
+import { oauthClient } from "../calendar/google";
+import type { CalendarRouteDeps } from "../calendar/routes";
+import { createCalendarStore } from "../calendar/store";
 import { handleCustomerMessage } from "../conversation/run-turn";
 import { createConversationStore } from "../conversation/supabase-store";
 import { forwardUnhandledMessages } from "../conversation/sweep";
@@ -86,6 +91,8 @@ export function getSmsRouteDeps(): SmsRouteDeps {
     // Emergencies are always handled (no model needed). The AI conversation
     // runs only when ANTHROPIC_API_KEY is set; otherwise texts go to the owner.
     const hasModel = Boolean(process.env.ANTHROPIC_API_KEY);
+    const calendarEnv = readCalendarEnv();
+    const calendarStore = createCalendarStore(db);
     const converse: Converse = (message) =>
       schedule(async () => {
         let handled = false;
@@ -100,6 +107,9 @@ export function getSmsRouteDeps(): SmsRouteDeps {
               modelFor: (c) => (hasModel ? createClaudeConversationModel(c) : null),
               notifications,
               log,
+              // Booking from the owner's calendar, when it's set up.
+              calendarFor: calendarEnv ? createCalendarAccess(calendarStore, calendarEnv, log) : undefined,
+              markCalendarRevoked: createRevokedHandler(calendarStore, (id) => smsStore.loadTenantConfig(id), notifications),
             },
           );
         } catch (err) {
@@ -136,4 +146,18 @@ export function getSweep(): ((deps: SweepDeps) => Promise<number>) | null {
   const db = createServiceClient(env.supabaseUrl, env.supabaseServiceRoleKey);
   const smsStore = createInboundSmsStore(db, log);
   return (deps) => forwardUnhandledMessages(createConversationStore(db), (id) => smsStore.loadTenantConfig(id), deps);
+}
+
+export function getCalendarRouteDeps(): CalendarRouteDeps {
+  const env = readTwilioWebhookEnv();
+  const calendarEnv = readCalendarEnv();
+  return {
+    env: calendarEnv,
+    store: createCalendarStore(createServiceClient(env.supabaseUrl, env.supabaseServiceRoleKey)),
+    oauth: () => {
+      if (!calendarEnv) throw new Error("calendar not configured");
+      return oauthClient(calendarEnv.googleClientId, calendarEnv.googleClientSecret, calendarEnv.redirectUri);
+    },
+    log,
+  };
 }

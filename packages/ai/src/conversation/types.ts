@@ -52,6 +52,12 @@ export class ModelUnavailableError extends Error {
   }
 }
 
+export interface SlotChoice {
+  // 1-based index into the offered options, or null.
+  choice: number | null;
+  wantsOtherTime: boolean;
+}
+
 export interface ConversationModel {
   classify(input: { history: Turn[]; latest: string }): Promise<{ category: SafetyCategory; info: ModelCallInfo }>;
   understand(input: {
@@ -59,4 +65,6 @@ export interface ConversationModel {
     latest: string;
     known: LeadDetails;
   }): Promise<{ result: Understanding; info: ModelCallInfo }>;
+  chooseSlot(input: { latest: string; options: string[] }): Promise<{ result: SlotChoice; info: ModelCallInfo }>;
+  extractAddress(input: { latest: string }): Promise<{ address: string | null; info: ModelCallInfo }>;
 }

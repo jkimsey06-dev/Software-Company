@@ -1,9 +1,24 @@
 import type { ConversationModel, LeadDetails } from "@sc/ai";
 import type { TenantConfig } from "@sc/shared";
 import type { Logger, MessageUpdate, SmsSender } from "../missed-call/types";
+import type { CalendarClient } from "../calendar/google";
 import type { NotificationDeps } from "../notifications/types";
 
+// The tenant's calendar, or why it can't be used right now.
+export type CalendarAccess =
+  | { ok: true; client: CalendarClient }
+  | { ok: false; reason: "not_connected" | "revoked" | "unavailable" };
+
 export type ConversationStatus = "active" | "handed_off" | "completed";
+export type ConversationStage = "qualifying" | "choosing_time" | "asking_address" | "booked";
+
+export interface BookingState {
+  stage: ConversationStage;
+  offeredSlots: Date[];
+  chosenSlot: Date | null;
+  offerRounds: number;
+  bookedEventId: string | null;
+}
 
 export interface Conversation {
   id: string;
@@ -12,6 +27,7 @@ export interface Conversation {
   leadId: string | null;
   createdAt: Date;
   details: LeadDetails;
+  booking: BookingState;
 }
 
 export interface ThreadMessage {
@@ -39,7 +55,11 @@ export type TurnAction =
   | "merged"
   | "send_failed"
   | "opted_out"
-  | "timed_out";
+  | "timed_out"
+  | "offer_times"
+  | "ask_address"
+  | "booked"
+  | "slot_taken";
 
 export interface TurnRecord {
   tenantId: string;
@@ -78,6 +98,8 @@ export interface ConversationStore {
   setStatus(conversationId: string, status: ConversationStatus, reason?: string): Promise<void>;
   setDetails(conversationId: string, details: LeadDetails): Promise<void>;
   incrementAiReplies(conversationId: string): Promise<void>;
+  setBooking(conversationId: string, booking: Partial<BookingState>): Promise<void>;
+  updateLeadAddress(tenantId: string, leadId: string, address: string): Promise<void>;
   updateLeadDetails(tenantId: string, leadId: string, details: LeadDetails): Promise<void>;
   isOptedOut(tenantId: string, phone: string): Promise<boolean>;
   addOptOut(tenantId: string, phone: string): Promise<void>;
@@ -107,6 +129,12 @@ export interface ConversationDeps {
   // How long to wait for another worker to finish this conversation before
   // handing the message to the owner instead.
   leaseWaitMs?: number;
+  // Optional: without it (or with no calendar connected) completed leads are
+  // handed to the owner to schedule, as before.
+  calendarFor?: (tenantId: string) => Promise<CalendarAccess>;
+  // Called when Google says the owner's access is gone.
+  markCalendarRevoked?: (tenantId: string) => Promise<void>;
+  now?: () => Date;
 }
 
 export interface CustomerMessage {
