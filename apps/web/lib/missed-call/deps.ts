@@ -2,7 +2,12 @@ import { after } from "next/server";
 import { createNotificationStore } from "../notifications/supabase-store";
 import { readNotificationEnv } from "../notifications/env";
 import { createOpsAlert } from "../notifications/ops-alert";
+import { createClaudeConversationModel } from "@sc/ai";
+import { handleCustomerMessage } from "../conversation/run-turn";
+import { createConversationStore } from "../conversation/supabase-store";
 import { createInboundSmsStore } from "../inbound-sms/supabase-store";
+import type { Converse } from "../inbound-sms/types";
+import { errorLabel } from "./types";
 import type { SmsRouteDeps } from "../inbound-sms/routes";
 import { createOwnerNotifier, createReplyNotifier, type Schedule } from "../notifications/owner";
 import { createResendSender } from "../notifications/resend-sender";
@@ -70,17 +75,51 @@ export function getRouteDeps(): RouteDeps {
 export function getSmsRouteDeps(): SmsRouteDeps {
   if (!cachedSms) {
     const env = readTwilioWebhookEnv();
+    const db = createServiceClient(env.supabaseUrl, env.supabaseServiceRoleKey);
     const notifications = getNotificationDeps();
+    const smsStore = createInboundSmsStore(db, log);
+    const notifyReply = notifications ? createReplyNotifier(notifications, schedule) : undefined;
+    const opsAlert = notifications?.opsAlert ?? createOpsAlert(null, undefined, log);
+
+    // The AI conversation runs only when ANTHROPIC_API_KEY is set; otherwise
+    // every customer text goes to the owner, as before.
+    const converse: Converse | undefined = process.env.ANTHROPIC_API_KEY
+      ? (message) =>
+          schedule(async () => {
+            let handled = false;
+            let config;
+            try {
+              config = await smsStore.loadTenantConfig(message.tenantId);
+              handled = await handleCustomerMessage(
+                { ...message, config },
+                {
+                  store: createConversationStore(db),
+                  sender: createTwilioSender(env.twilioAccountSid, env.twilioAuthToken),
+                  modelFor: (c) => createClaudeConversationModel(c),
+                  notifications,
+                  log,
+                },
+              );
+            } catch (err) {
+              const error = errorLabel(err);
+              log("conversation.error", { tenantId: message.tenantId, messageSid: message.messageSid, error });
+              await opsAlert("conversation.error", { tenantId: message.tenantId, messageSid: message.messageSid, error });
+            }
+            // The AI didn't take it (or failed): the owner sees the text.
+            if (!handled && config && notifyReply) {
+              notifyReply({ ...message, config, callerPhone: message.customerPhone, optedOut: false });
+            }
+          })
+      : undefined;
+
     cachedSms = {
-      store: createInboundSmsStore(
-        createServiceClient(env.supabaseUrl, env.supabaseServiceRoleKey),
-        log,
-      ),
+      store: smsStore,
       log,
       twilioAuthToken: env.twilioAuthToken,
       publicBaseUrl: env.publicBaseUrl,
-      notifyReply: notifications ? createReplyNotifier(notifications, schedule) : undefined,
-      opsAlert: notifications?.opsAlert ?? createOpsAlert(null, undefined, log),
+      notifyReply,
+      converse,
+      opsAlert,
       schedule,
     };
   }

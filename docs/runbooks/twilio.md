@@ -73,7 +73,8 @@ sent but not recorded.
 | Plain-language opt-outs ("stop texting me", "no more texts", "opt me out", "don't text me, call me") | Opt-out recorded, and the owner is emailed with a note that they're opted out of texts. |
 | START, UNSTOP | Opt-out removed, unless the owner added it by hand. |
 | HELP, INFO | Twilio sends the help text, and the owner is emailed (could be an emergency). |
-| Anything else, including photos | Saved to `inbound_messages` and emailed to the owner ("Text from ..."). No reply until the AI conversation lands. |
+| Anything else with words | Saved to `inbound_messages` and handed to the AI conversation (see docs/runbooks/ai-conversation.md), or emailed to the owner if the AI can't take it. |
+| Photos with no text | Emailed to the owner. |
 | Same message delivered twice, or replayed | Second one does nothing. An old START can never undo a later STOP. |
 | Database down | 500 and a `sms.error` alert saying whether it was an opt-out. Twilio's Advanced Opt-Out still blocks texts after standard STOP words; a plain-language opt-out in that alert must be added to `opt_outs` by hand. |
 
@@ -82,4 +83,4 @@ Not treated as opt-outs (forwarded to the owner instead): "wrong number", "stop 
 ## Not handled yet
 
 - Owner notifications: see docs/runbooks/notifications.md.
-- The AI conversation that replies to customers (next PR).
+- AI replies to customers: see docs/runbooks/ai-conversation.md.

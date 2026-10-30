@@ -1,6 +1,11 @@
 import type { Logger } from "../missed-call/types";
 
-export type NotificationKind = "new_lead" | "textback_failed" | "customer_reply";
+export type NotificationKind =
+  | "new_lead"
+  | "textback_failed"
+  | "customer_reply"
+  | "conversation_update"
+  | "emergency";
 
 export interface NewNotification {
   tenantId: string;
