@@ -74,7 +74,15 @@ const messaging = z.object({
   a2pCampaignId: z.string().max(64).optional(),
   fromNumber: phoneE164.optional(),
   aiDisclosureAtStart: z.boolean().default(true),
-  optOutText: z.string().min(1).max(100).default("Reply STOP to opt out"),
+  // Must keep the STOP keyword so every text tells people how to opt out.
+  optOutText: z
+    .string()
+    .min(1)
+    .max(100)
+    .refine((t) => /\bSTOP\b/.test(t), { message: 'optOutText must include "STOP"' })
+    .default("Reply STOP to opt out"),
+  // A caller who misses several calls in a row gets one text-back, not one per call.
+  textbackCooldownHours: z.number().int().min(1).max(168).default(24),
 });
 
 const calls = z.object({

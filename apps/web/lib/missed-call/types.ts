@@ -32,8 +32,8 @@ export interface MissedCallStore {
     fromPhone: string | null;
     toPhone: string;
   }): Promise<void>;
-  // Sets the outcome only if none is set yet. Returns true only for the
-  // request that set it, so duplicate webhooks do nothing.
+  // Sets the outcome only if none is set yet, and returns the outcome now
+  // stored. The first webhook decides; later ones can't flip it.
   setCallOutcome(call: {
     tenantId: string;
     callSid: string;
@@ -41,11 +41,13 @@ export interface MissedCallStore {
     toPhone: string;
     outcome: CallOutcome;
     dialStatus: string;
-  }): Promise<boolean>;
+  }): Promise<CallOutcome>;
   // Reuses the caller's open lead from the last 24 hours, otherwise creates one.
   findOrCreateMissedCallLead(tenantId: string, phone: string): Promise<string>;
   linkCallToLead(tenantId: string, callSid: string, leadId: string): Promise<void>;
   isOptedOut(tenantId: string, phone: string): Promise<boolean>;
+  // True if a text-back to this phone was sent (or may have been) since the given time.
+  hasRecentTextback(tenantId: string, phone: string, since: Date): Promise<boolean>;
   addOptOut(tenantId: string, phone: string, source: "carrier"): Promise<void>;
   // Inserts the message row if its idempotency key is new. Returns the row id,
   // or null if another request already claimed it (never send in that case).
@@ -69,6 +71,14 @@ export class SmsSendError extends Error {
 export interface SmsSender {
   // Throws SmsSendError on failure.
   send(message: { from: string; to: string; body: string }): Promise<{ sid: string }>;
+}
+
+// A short, PII-free description of an error for logs.
+export function errorLabel(err: unknown): string {
+  if (err instanceof Error && "code" in err && typeof err.code === "string") {
+    return `${err.name}:${err.code}`;
+  }
+  return err instanceof Error ? err.name : "unknown";
 }
 
 // Structured log events. Never pass phone numbers or message bodies.

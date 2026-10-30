@@ -21,5 +21,22 @@ export function readTwilioWebhookEnv(env: NodeJS.ProcessEnv = process.env): Twil
   if (missing.length > 0) {
     throw new Error(`Missing environment variables for Twilio webhooks: ${missing.join(", ")}`);
   }
-  return required as TwilioWebhookEnv;
+  const valid = required as TwilioWebhookEnv;
+  assertPublicOrigin(valid.publicBaseUrl);
+  return valid;
+}
+
+// Twilio signs the exact URL it calls. A base URL with a path or the wrong
+// scheme silently breaks every signature check, so fail loudly at startup.
+export function assertPublicOrigin(value: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("PUBLIC_BASE_URL is not a valid URL");
+  }
+  const localHttp = url.protocol === "http:" && url.hostname === "localhost";
+  if ((url.protocol !== "https:" && !localHttp) || url.origin !== value.replace(/\/$/, "")) {
+    throw new Error("PUBLIC_BASE_URL must be an https origin like https://app.example.com");
+  }
 }

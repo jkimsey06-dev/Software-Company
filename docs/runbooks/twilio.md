@@ -18,6 +18,11 @@
    as answered (no text-back). Test it with a real call during launch QA.
 5. Set `messaging.a2pStatus`, `a2pCampaignId` and `fromNumber` only once the
    campaign is approved. Until then calls are logged and leads saved, but no texts.
+   `fromNumber` must also be in `tenant_phone_numbers` for the same tenant, or no
+   texts are sent.
+6. Turn on **Advanced Opt-Out** on the client's Messaging Service. Until we handle
+   inbound STOP ourselves (next PR), Twilio's opt-out list is the only record of
+   people who replied STOP, and it is tied to the sending number.
 
 ## How it behaves
 
@@ -26,15 +31,36 @@
 | Owner answers | Call logged as answered. Nothing else. |
 | No answer / busy / failed / caller hangs up | Call logged as missed, lead saved, one text-back. |
 | Caller ID withheld | Call logged as missed. No lead, no text. |
+| Unrecognized dial status | Saved as missed with a lead. No text. |
+| Caller is the tenant's own number | Lead saved, no text. |
+| Caller is outside the US/Canada | Lead saved, no text. |
+| Same caller missed again within `textbackCooldownHours` (default 24) | Lead reused, no second text. |
+| Tenant config is invalid | Voice webhook returns 500, so the fallback forwards to the owner. No text. |
 | Caller opted out (STOP) | Lead saved, no text. |
 | A2P not approved | Lead saved, no text. |
 | Same webhook delivered twice | Second one does nothing. |
 | Twilio rejects the text (4xx) | Message marked `failed`. Not retried. Error 21610 also records an opt-out. |
 | Twilio times out / 5xx | Message marked `unknown`. **Never retried automatically**: it may have been sent. Review by hand. |
-| Our database is down during the dial-status webhook | Call ends cleanly, nothing sent, error logged. |
+| Our database is down during the dial-status webhook | Call ends cleanly, nothing sent, error logged. A repeat of the same webhook picks up where it stopped. |
+| Text sent but recording it fails | Text is not resent. Row stays `pending`; see below. |
 
 ## Checking on failures
 
-Messages with `status in ('failed', 'unknown')` in `outbound_messages` need a look.
+These need a look:
+
+```sql
+select * from outbound_messages
+where status in ('failed', 'unknown')
+   or (status = 'pending' and created_at < now() - interval '5 minutes')
+order by created_at desc;
+```
+
 Logs are JSON lines with `event`, `tenantId` and `callSid`, never phone numbers or
-message text.
+message text. Errors are logged as codes (e.g. `StoreError:23505`), not messages.
+`textback.mark_sent_failed` includes the Twilio message SID for a text that was
+sent but not recorded.
+
+## Not handled yet
+
+- Owner notification of new leads and of failures (next PR).
+- Inbound texts, STOP replies and the AI conversation (next PR).

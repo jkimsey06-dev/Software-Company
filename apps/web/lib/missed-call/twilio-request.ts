@@ -1,6 +1,9 @@
 import twilio from "twilio";
 import { z } from "zod";
 
+// Twilio voice webhooks are a few KB. Anything bigger isn't from Twilio.
+const MAX_BODY_BYTES = 64 * 1024;
+
 // Verifies X-Twilio-Signature against the public URL Twilio called, then returns
 // the form params. Returns null if the request is not provably from Twilio.
 export async function readVerifiedTwilioForm(
@@ -14,10 +17,16 @@ export async function readVerifiedTwilioForm(
     return null;
   }
 
-  const form = await request.formData();
-  const params: Record<string, string> = {};
-  for (const [key, value] of form) {
-    if (typeof value !== "string") return null;
+  const declared = Number(request.headers.get("content-length"));
+  if (declared > MAX_BODY_BYTES) return null;
+  const body = await request.text();
+  if (body.length > MAX_BODY_BYTES) return null;
+
+  // Null prototype: a key like "__proto__" is just a key.
+  const params: Record<string, string> = Object.create(null);
+  for (const [key, value] of new URLSearchParams(body)) {
+    // Twilio never repeats a key; a repeat means the body was tampered with.
+    if (Object.hasOwn(params, key)) return null;
     params[key] = value;
   }
 

@@ -58,6 +58,14 @@ describe("tenantConfigSchema", () => {
     expect(parseTenantConfig(example).calls.ringSeconds).toBe(18);
   });
 
+  it("requires STOP in the opt-out wording", () => {
+    const messaging = (optOutText: string) =>
+      withChanges({ messaging: { a2pStatus: "not_started", optOutText } });
+    expect(isValid(messaging("Thanks!"))).toBe(false);
+    expect(isValid(messaging("reply stop to opt out"))).toBe(false);
+    expect(isValid(messaging("Text STOP to unsubscribe"))).toBe(true);
+  });
+
   it("rejects an unsafe slug", () => {
     expect(isValid(withChanges({ slug: "../other-tenant" }))).toBe(false);
     expect(isValid(withChanges({ slug: "Example HVAC" }))).toBe(false);

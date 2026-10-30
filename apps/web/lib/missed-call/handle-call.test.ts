@@ -209,4 +209,43 @@ describe("handleDialStatus", () => {
     expect(output).not.toContain(BUSINESS_NUMBER.slice(2));
     expect(output).not.toContain(sender.sent[0]?.body.slice(0, 20));
   });
+
+  it("does not text numbers outside the US and Canada", async () => {
+    const { sender, store, log, deps } = setup();
+    await handleDialStatus(missedCall({ from: "+447700900123" }), deps);
+    expect(store.leads).toHaveLength(1);
+    expect(sender.sent).toHaveLength(0);
+    expect(log.lines.join()).toContain("non_us_number");
+  });
+
+  it("does not send from a number another tenant owns", async () => {
+    const store = new FakeStore(
+      textingConfig({
+        messaging: { a2pStatus: "approved", a2pCampaignId: "CX1", fromNumber: "+14235550777" },
+      }),
+    );
+    store.tenants.set("+14235550777", { tenantId: "other-tenant", config: textingConfig() });
+    const { sender, log, deps } = setup(store);
+    await handleDialStatus(missedCall(), deps);
+    expect(sender.sent).toHaveLength(0);
+    expect(log.lines.join()).toContain("from_number_not_owned");
+  });
+
+  it("tries again on the next call if the last text-back was refused", async () => {
+    const { sender, deps } = setup();
+    sender.failWith = new SmsSendError("rejected", "30007", "filtered");
+    await handleDialStatus(missedCall(), deps);
+    sender.failWith = null;
+    await handleDialStatus(missedCall({ callSid: `CA${"b".repeat(32)}` }), deps);
+    expect(sender.sent).toHaveLength(1);
+  });
+
+  it("logs error codes, not error messages", async () => {
+    const store = new FakeStore();
+    store.failOn.add("recordInboundCall");
+    const { log, deps } = setup(store);
+    await handleIncomingCall({ callSid: CALL_SID, from: CALLER, to: BUSINESS_NUMBER }, deps);
+    expect(log.lines.join()).not.toContain("unavailable");
+  });
 });
+

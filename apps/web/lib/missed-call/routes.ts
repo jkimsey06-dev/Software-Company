@@ -1,6 +1,7 @@
 import type { ZodType } from "zod";
 import { handleDialStatus, handleIncomingCall, type CallDeps } from "./handle-call";
 import { dialStatusParams, inboundCallParams, readVerifiedTwilioForm } from "./twilio-request";
+import { errorLabel } from "./types";
 
 export interface RouteDeps extends CallDeps {
   twilioAuthToken: string;
@@ -56,7 +57,7 @@ export function dialStatusRoute(getDeps: () => RouteDeps) {
     } catch (err) {
       // The caller is still on the line: end the call cleanly rather than
       // playing Twilio's error message. The failure is logged for follow-up.
-      deps.log("dial_status.error", { callSid: CallSid, error: String(err) });
+      deps.log("dial_status.error", { callSid: CallSid, error: errorLabel(err) });
       return xml('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
     }
   };

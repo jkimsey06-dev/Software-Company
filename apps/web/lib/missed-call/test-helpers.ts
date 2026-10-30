@@ -80,11 +80,10 @@ export class FakeStore implements MissedCallStore {
     const existing = this.calls.get(call.callSid);
     if (!existing) {
       this.calls.set(call.callSid, { ...call, leadId: null });
-      return true;
+      return call.outcome;
     }
-    if (existing.outcome !== null) return false;
-    existing.outcome = call.outcome;
-    return true;
+    existing.outcome ??= call.outcome;
+    return existing.outcome;
   }
 
   async findOrCreateMissedCallLead(tenantId: string, phone: string) {
@@ -104,6 +103,18 @@ export class FakeStore implements MissedCallStore {
   async isOptedOut(tenantId: string, phone: string) {
     this.maybeFail("isOptedOut");
     return this.optOuts.has(`${tenantId}:${phone}`);
+  }
+
+  // Ignores the time window: every message in a test counts as recent.
+  async hasRecentTextback(tenantId: string, phone: string) {
+    this.maybeFail("hasRecentTextback");
+    return [...this.messages.values()].some(
+      (m) =>
+        m.tenantId === tenantId &&
+        m.toPhone === phone &&
+        m.idempotencyKey.startsWith("missed-call-textback:") &&
+        m.status !== "failed",
+    );
   }
 
   async addOptOut(tenantId: string, phone: string) {

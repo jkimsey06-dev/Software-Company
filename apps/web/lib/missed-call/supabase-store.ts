@@ -1,11 +1,36 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { tenantConfigSchema } from "@sc/shared";
-import type { Logger, MissedCallStore } from "./types";
+import type { CallOutcome, Logger, MissedCallStore } from "./types";
 
 const LEAD_REUSE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-function check<T>(result: { data: T; error: { message: string } | null }, what: string): T {
-  if (result.error) throw new Error(`${what}: ${result.error.message}`);
+// Carries the Postgres/PostgREST error code, which is safe to log. The message
+// can include row values, so it is kept off the error that reaches logs.
+export class StoreError extends Error {
+  constructor(
+    readonly operation: string,
+    readonly code: string,
+  ) {
+    super(`${operation} failed (${code})`);
+    this.name = "StoreError";
+  }
+}
+
+// Thrown when a tenant's stored config fails validation. The voice webhook then
+// returns 500, so Twilio's fallback forwards the call straight to the owner.
+export class TenantConfigError extends Error {
+  readonly code = "invalid_config";
+  constructor() {
+    super("tenant config is invalid");
+    this.name = "TenantConfigError";
+  }
+}
+
+function check<T>(
+  result: { data: T; error: { message: string; code?: string } | null },
+  what: string,
+): T {
+  if (result.error) throw new StoreError(what, result.error.code ?? "unknown");
   return result.data;
 }
 
@@ -45,7 +70,7 @@ export function createSupabaseStore(db: SupabaseClient, log: Logger): MissedCall
       const config = tenantConfigSchema.safeParse(row.tenants.config);
       if (!config.success) {
         log("tenant.config_invalid", { tenantId: row.tenant_id });
-        return null;
+        throw new TenantConfigError();
       }
       return { tenantId: row.tenant_id, config: config.data };
     },
@@ -84,7 +109,7 @@ export function createSupabaseStore(db: SupabaseClient, log: Logger): MissedCall
           .select("id"),
         "insert call outcome",
       );
-      if (inserted.length > 0) return true;
+      if (inserted.length > 0) return call.outcome;
 
       // Already recorded: only the first request to set the outcome wins.
       const updated = required(
@@ -97,7 +122,19 @@ export function createSupabaseStore(db: SupabaseClient, log: Logger): MissedCall
           .select("id"),
         "update call outcome",
       );
-      return updated.length > 0;
+      if (updated.length > 0) return call.outcome;
+
+      // Someone else set it first; that answer stands.
+      const existing = required(
+        await db
+          .from("calls")
+          .select("outcome")
+          .eq("tenant_id", call.tenantId)
+          .eq("call_sid", call.callSid)
+          .single(),
+        "read call outcome",
+      );
+      return existing.outcome as CallOutcome;
     },
 
     async findOrCreateMissedCallLead(tenantId, phone) {
@@ -147,6 +184,23 @@ export function createSupabaseStore(db: SupabaseClient, log: Logger): MissedCall
           .eq("phone", phone)
           .limit(1),
         "check opt-out",
+      );
+      return rows.length > 0;
+    },
+
+    async hasRecentTextback(tenantId, phone, since) {
+      // 'failed' doesn't count: Twilio refused it, so nothing reached the caller.
+      const rows = required(
+        await db
+          .from("outbound_messages")
+          .select("id")
+          .eq("tenant_id", tenantId)
+          .eq("to_phone", phone)
+          .like("idempotency_key", "missed-call-textback:%")
+          .in("status", ["pending", "sent", "unknown"])
+          .gte("created_at", since.toISOString())
+          .limit(1),
+        "check recent text-back",
       );
       return rows.length > 0;
     },

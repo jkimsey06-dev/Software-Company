@@ -142,4 +142,35 @@ describe("Twilio webhook routes", () => {
     expect(await res.text()).toContain("<Hangup/>");
     expect(sender.sent).toHaveLength(0);
   });
+
+  it("rejects repeated keys in the body", async () => {
+    const { deps } = setup();
+    const body = `${new URLSearchParams(callParams)}&To=%2B14235550999`;
+    const req = new Request(`http://internal.local${VOICE}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-twilio-signature": twilio.getExpectedTwilioSignature(AUTH_TOKEN, `${BASE_URL}${VOICE}`, callParams),
+      },
+      body,
+    });
+    expect((await voiceRoute(() => deps)(req)).status).toBe(403);
+  });
+
+  it("rejects oversized bodies before checking the signature", async () => {
+    const { deps } = setup();
+    const res = await voiceRoute(() => deps)(
+      twilioRequest(VOICE, { ...callParams, Padding: "x".repeat(70_000) }),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("treats a __proto__ param as plain data", async () => {
+    const { deps } = setup();
+    const params = Object.fromEntries([...Object.entries(callParams), ["__proto__", "x"]]);
+    expect(new URLSearchParams(params).toString()).toContain("__proto__=x");
+    const res = await voiceRoute(() => deps)(twilioRequest(VOICE, params));
+    expect(res.status).toBe(200);
+  });
 });
+
