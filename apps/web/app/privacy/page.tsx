@@ -23,7 +23,7 @@ export default function Privacy() {
       <p>We collect:</p>
       <ul>
         <li>Your phone number, and when you called or texted.</li>
-        <li>The text messages you send and the ones we send you.</li>
+        <li>The text messages you send and the ones we send you, including photos or files you text (stored by Twilio).</li>
         <li>What you tell us about the job: the service you need, your area, how urgent it is, and the street address for an estimate.</li>
       </ul>
       <p>
@@ -31,9 +31,9 @@ export default function Privacy() {
         estimate if you ask for one. We don&apos;t record calls. The business you contacted can see your information.
       </p>
       <p>
-        <strong>Texts.</strong> Reply STOP at any time to stop texts from that business. Reply HELP for help. Message and
-        data rates may apply. We don&apos;t send marketing texts, and we never sell or share your phone number for anyone
-        else&apos;s marketing.
+        <strong>Texts.</strong> Reply STOP at any time to stop texts from that business. Reply HELP for help. Message frequency
+        varies. Message and data rates may apply. We don&apos;t send marketing texts. Mobile information is not shared with
+        third parties or affiliates for marketing or promotional purposes.
       </p>
       <p>
         <strong>AI.</strong> Replies are handled by an AI assistant. It reads your messages to work out what you need;
@@ -56,12 +56,12 @@ export default function Privacy() {
         </li>
         <li>
           <strong>Create events on calendars you own</strong> (<code>calendar.events.owned</code>): to add an estimate a
-          customer books. Each event shows the customer&apos;s phone number, the service, their area, and the address
-          they gave.
+          customer books. Each event shows the customer&apos;s phone number, the service, their area, how urgent it
+          is, and the address they gave.
         </li>
       </ul>
       <p>
-        We store your Google access token encrypted, and use it only for these two things. We don&apos;t use Google data
+        We store the Google token that lets us stay connected (a refresh token) encrypted, and use it only for these two things. We don&apos;t use Google data
         for advertising, don&apos;t sell it, don&apos;t use it to train AI models, and don&apos;t let people read it except
         when you ask us to, for security, or when the law requires it. The open times we offer a customer may be passed
         to our AI provider so it can understand which one they picked.
@@ -106,7 +106,7 @@ export default function Privacy() {
 
       <h2>Contact</h2>
       <p>
-        {companyLabel}, {addressLabel}. Email: <a href={`mailto:${SITE.contactEmail}`}>{emailLabel}</a>.
+        {companyLabel}, {addressLabel}. Email: {SITE.contactEmail ? <a href={`mailto:${SITE.contactEmail}`}>{emailLabel}</a> : emailLabel}.
       </p>
 
       <SiteFooter />
