@@ -43,6 +43,13 @@ All migrations are applied to **dev** only. You promote them yourself.
 
 Full steps: `docs/runbooks/calendar.md`.
 
+Before you can submit for verification:
+- [ ] Fill in your company name, contact email and mailing address in `apps/web/lib/site.ts`. Until you do, the homepage and privacy page show a "Draft" notice.
+- [ ] Have your lawyer review the draft privacy policy (`/privacy`, source in `apps/web/app/privacy/page.tsx`), including the retention period, which is still a placeholder.
+- [ ] Deploy to your own domain (not `*.vercel.app`) and verify that domain in Google Search Console.
+- [ ] Use the homepage and `/privacy` URLs on the consent screen.
+- [ ] Record a demo video (unlisted on YouTube) showing the consent screen and a booking landing on the calendar.
+
 - [ ] Create a project and enable the **Google Calendar API**.
 - [ ] Set up the OAuth consent screen (External) with the two scopes: `calendar.freebusy` and `calendar.events.owned`.
 - [ ] Create a Web OAuth client with redirect URI `https://<PUBLIC_BASE_URL>/api/calendar/callback`.

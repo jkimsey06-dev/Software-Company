@@ -18,6 +18,7 @@ blocks launch. Tests use the client's test number or a team phone, never a real 
 - [ ] A missed call to the client's number triggers one text-back within the configured delay
 - [ ] First text includes the AI disclosure (if required) and "Reply STOP to opt out"
 - [ ] STOP (and variants) stops all further texts immediately
+- [ ] Advanced Opt-Out is on for the Messaging Service: STOP and HELP each get Twilio's confirmation text (the privacy policy promises HELP works)
 - [ ] A duplicate webhook delivery does not send a second text
 
 ## Conversation
