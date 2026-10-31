@@ -34,6 +34,15 @@ All migrations are applied to **dev** only. You promote them yourself.
 | `CALENDAR_TOKEN_KEY` | `openssl rand -base64 32`. Never rotate it without reconnecting every calendar |
 | `CALENDAR_LINK_SECRET` | `openssl rand -hex 32` |
 
+## Owner dashboard (Supabase Auth)
+
+Steps are in `docs/runbooks/dashboard.md`. Do them on dev first, then staging and prod.
+
+- [ ] Turn off public sign-ups in Supabase Auth.
+- [ ] Set the Site URL to the app's public URL.
+- [ ] Edit the Magic link email template to link to `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}`.
+- [ ] Before real clients, send login emails through Resend's SMTP (Supabase's built-in sender is for testing).
+
 ## 4. Resend (email)
 
 - [ ] Verify a sending domain in Resend.
