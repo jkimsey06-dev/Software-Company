@@ -1,5 +1,5 @@
 import type { ConversationInfo, LeadRow } from "../../lib/dashboard/data";
-import { formatEstimate, formatWhen, serviceName, statusLabel, telHref, urgencyLabel } from "../../lib/dashboard/format";
+import { LEAD_STATUSES, formatEstimate, formatWhen, serviceName, statusLabel, telHref, urgencyLabel } from "../../lib/dashboard/format";
 import type { ThreadItem } from "../../lib/dashboard/thread";
 import { formatPhone, reasonLine } from "../../lib/notifications/templates";
 
@@ -9,9 +9,16 @@ interface Props {
   thread: ThreadItem[];
   config: unknown;
   timezone: string;
+  notice?: "saved" | "invalid" | "save";
 }
 
-export function LeadDetail({ lead, conversation, thread, config, timezone }: Props) {
+const NOTICES = {
+  saved: "Saved.",
+  invalid: "Those changes couldn't be saved. Check the lengths and try again.",
+  save: "Something went wrong saving. Please try again.",
+};
+
+export function LeadDetail({ lead, conversation, thread, config, timezone, notice }: Props) {
   const tel = telHref(lead.phone);
   const booked = conversation?.stage === "booked" && conversation.chosen_slot ? formatEstimate(conversation.chosen_slot, timezone) : null;
   const address = lead.address || conversation?.address || null;
@@ -27,6 +34,7 @@ export function LeadDetail({ lead, conversation, thread, config, timezone }: Pro
         {needsYou && <span className="badge needs">Needs you</span>}
       </div>
       {why && <p className="notice">{why}</p>}
+      {notice && <p className={notice === "saved" ? "notice ok" : "notice"} role="status">{NOTICES[notice]}</p>}
 
       {tel && (
         <p>
@@ -53,6 +61,26 @@ export function LeadDetail({ lead, conversation, thread, config, timezone }: Pro
           <dt>First contact</dt><dd>{formatWhen(lead.created_at, timezone)}</dd>
           {lead.notes && (<><dt>Notes</dt><dd className="text">{lead.notes}</dd></>)}
         </dl>
+      </section>
+
+      <section className="panel">
+        <h2>Edit</h2>
+        <form method="post" action={`/dashboard/leads/${lead.id}/update`} className="stack">
+          <input type="hidden" name="was_status" value={lead.status} />
+          <label htmlFor="status">Status</label>
+          <select id="status" name="status" defaultValue={lead.status}>
+            {LEAD_STATUSES.map((s) => (
+              <option key={s} value={s}>{statusLabel(s)}</option>
+            ))}
+          </select>
+          <label htmlFor="name">Name</label>
+          <input id="name" name="name" defaultValue={lead.name ?? ""} maxLength={120} autoComplete="off" />
+          <label htmlFor="address">Address</label>
+          <input id="address" name="address" defaultValue={lead.address ?? ""} maxLength={200} autoComplete="off" />
+          <label htmlFor="notes">Notes (only you see these)</label>
+          <textarea id="notes" name="notes" defaultValue={lead.notes ?? ""} maxLength={4000} rows={4} />
+          <button type="submit">Save</button>
+        </form>
       </section>
 
       <section className="panel">

@@ -9,11 +9,19 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Always rendered per request: it shows the signed-in owner's data.
 export const dynamic = "force-dynamic";
 
-export default async function LeadPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function LeadPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { id } = await params;
+  const q = await searchParams;
+  const notice = q.saved === "1" ? "saved" : q.error === "invalid" ? "invalid" : q.error === "save" ? "save" : undefined;
   if (!UUID.test(id)) notFound();
   const { db, tenant } = await getContext();
   const detail = await getLeadDetail(db, tenant.tenantId, id);
   if (!detail) notFound();
-  return <LeadDetail {...detail} config={tenant.config} timezone={tenantTimezone(tenant.config)} />;
+  return <LeadDetail {...detail} config={tenant.config} timezone={tenantTimezone(tenant.config)} notice={notice} />;
 }

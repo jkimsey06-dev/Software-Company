@@ -141,6 +141,36 @@ describe("booking an estimate from the owner's calendar", () => {
     expect(s.model.extractAddressCalls).toBe(1);
   });
 
+  it("marks the lead booked, but never undoes a status the owner set", async () => {
+    const s = setup();
+    await s.say("AC repair in Cleveland, soon");
+    await s.say("2");
+    s.model.addresses.push("123 Main St");
+    await s.say("123 Main St");
+    expect(s.store.leadStatuses.get("lead-1")).toBe("booked");
+
+    const t = setup();
+    t.store.leadStatuses.set("lead-1", "lost");
+    await t.say("AC repair in Cleveland, soon");
+    await t.say("2");
+    t.model.addresses.push("123 Main St");
+    await t.say("123 Main St");
+    expect(t.store.leadStatuses.get("lead-1")).toBe("lost");
+  });
+
+  it("a failure to update the lead status doesn't undo the booking", async () => {
+    const s = setup();
+    await s.say("AC repair in Cleveland, soon");
+    await s.say("2");
+    s.store.markLeadBooked = async () => {
+      throw new Error("supabase timeout");
+    };
+    s.model.addresses.push("123 Main St");
+    await s.say("123 Main St");
+    expect(bodies(s).at(-1)).toMatch(/^You're booked/);
+    expect(s.conv().reason).toBe("booked");
+  });
+
   it("booking twice for the same time creates one event", async () => {
     const s = setup();
     await s.say("AC repair in Cleveland, soon");

@@ -7,7 +7,27 @@ Last updated: 2026-10-30.
 
 - [ ] Confirm the `main` ruleset has **Require status checks to pass** turned on, with the **test** check added.
 
-## 2. Supabase (staging and prod)
+## 2. Supabase
+
+### Owner sign-in (magic link): do this on dev first, then staging and prod
+
+Owners sign in with an emailed link. It won't work until you change these settings in the Supabase dashboard, under **Authentication**. More detail: `docs/runbooks/dashboard.md`.
+
+- [ ] **Sign In / Providers → Email:** keep Email on and turn **off** "Allow new users to sign up". Owners are added by us, never self-registered.
+- [ ] **URL Configuration:** set **Site URL** to the app's public address (the same value as `PUBLIC_BASE_URL`).
+- [ ] **Email Templates → Magic link:** change the link so it goes to our confirm page. Replace `{{ .ConfirmationURL }}` with exactly:
+
+  ```
+  {{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}
+  ```
+
+  Without this the emailed link won't sign anyone in.
+- [ ] Before real clients: **Project Settings → Authentication → SMTP**, send login emails through Resend's SMTP with your verified domain. Supabase's built-in sender is for testing only and is rate-limited.
+- [ ] Add rate limiting in front of `/auth/login` (a Vercel Firewall rule, for example). Supabase limits repeat emails to one address, but nothing limits requests per visitor.
+- [ ] For each client, add their people with `pnpm --filter @sc/web owner:add <tenant-id> <email>` (a dry run; add `--apply` to do it). It sends no email: tell them to open `/login` and ask for a link. See `docs/runbooks/dashboard.md`.
+- [ ] Try one real sign-in on dev. It's the one thing I couldn't test: add a test owner with the script above, request a link, click it, and check you land on `/dashboard`.
+
+### Staging and prod databases
 
 All migrations are applied to **dev** only. You promote them yourself.
 
@@ -33,16 +53,6 @@ All migrations are applied to **dev** only. You promote them yourself.
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Calendar OAuth client |
 | `CALENDAR_TOKEN_KEY` | `openssl rand -base64 32`. Never rotate it without reconnecting every calendar |
 | `CALENDAR_LINK_SECRET` | `openssl rand -hex 32` |
-
-## Owner dashboard (Supabase Auth)
-
-Steps are in `docs/runbooks/dashboard.md`. Do them on dev first, then staging and prod.
-
-- [ ] Turn off public sign-ups in Supabase Auth.
-- [ ] Set the Site URL to the app's public URL.
-- [ ] Edit the Magic link email template to link to `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}`.
-- [ ] Add rate limiting in front of `/auth/login` (Vercel Firewall rule, for example). Supabase limits repeat emails to one address, but nothing limits requests per visitor.
-- [ ] Before real clients, send login emails through Resend's SMTP (Supabase's built-in sender is for testing).
 
 ## 4. Resend (email)
 

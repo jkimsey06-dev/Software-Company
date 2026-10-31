@@ -137,3 +137,6 @@ dd { margin: 0; }
 .thread .bubble { display: inline-block; max-width: 100%; padding: 0.5rem 0.75rem; border-radius: 10px; background: var(--chip-bg); }
 .thread li.business { text-align: right; }
 .thread li.business .bubble { text-align: left; background: var(--bubble-out); }
+
+textarea { font: inherit; padding: 0.55rem 0.7rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); resize: vertical; }
+label { font-weight: 600; font-size: 0.9rem; }
