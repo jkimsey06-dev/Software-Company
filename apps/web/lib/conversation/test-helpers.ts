@@ -118,6 +118,11 @@ export class FakeConversationStore implements ConversationStore {
     const c = this.get(id);
     c.booking = { ...c.booking, ...b };
   }
+  leadStatuses = new Map<string, string>();
+  async markLeadBooked(_tenantId: string, leadId: string) {
+    const now = this.leadStatuses.get(leadId) ?? "new";
+    if (now === "new" || now === "contacted") this.leadStatuses.set(leadId, "booked");
+  }
   async updateLeadAddress(_tenantId: string, leadId: string, address: string) {
     this.addresses.set(leadId, address);
   }

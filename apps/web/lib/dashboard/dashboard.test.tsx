@@ -2,7 +2,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { LeadDetail } from "../../app/dashboard/lead-detail";
 import { LeadList } from "../../app/dashboard/lead-list";
+import { addOwner, parseAddOwnerArgs, type OwnerAdmin } from "./add-owner";
 import { parseEmail, parseTokenHash, sameOrigin } from "./auth-routes";
+import { parseLeadEdit } from "./edit";
 import type { ConversationInfo, LeadRow } from "./data";
 import { formatWhen, parsePage, parseStatusFilter, serviceName, telHref, tenantTimezone } from "./format";
 import { pickTenant, type Membership } from "./tenant";
@@ -174,5 +176,104 @@ describe("session cookies", () => {
     const o = sessionCookieOptions({ httpOnly: false, maxAge: 400 * 24 * 3600, path: "/" });
     expect(o).toMatchObject({ httpOnly: true, sameSite: "lax", maxAge: 30 * 24 * 3600, path: "/" });
     expect(sessionCookieOptions(undefined).httpOnly).toBe(true);
+  });
+});
+
+describe("lead edits", () => {
+  const form = (o: Record<string, string>) => {
+    const f = new FormData();
+    for (const [k, v] of Object.entries({ status: "new", was_status: "new", name: "", address: "", notes: "", ...o })) f.set(k, v);
+    return f;
+  };
+
+  it("leaves the status alone unless the owner changed it", () => {
+    expect(parseLeadEdit(form({ notes: "called" }))?.status).toBeNull();
+    expect(parseLeadEdit(form({ status: "won", was_status: "booked" }))?.status).toBe("won");
+    // The system marked it booked while the form was open: saving a note keeps "booked".
+    expect(parseLeadEdit(form({ status: "new", was_status: "new", notes: "x" }))?.status).toBeNull();
+  });
+
+  it("cleans text and turns empty fields into null", () => {
+    const e = parseLeadEdit(form({ name: "  Pat\u0000 Lee ", address: "12 Main\nSt", notes: "a\r\nb\u0007c" }));
+    expect(e).toEqual({ status: null, name: "Pat Lee", address: "12 Main St", notes: "a\nbc" });
+    expect(parseLeadEdit(form({}))).toEqual({ status: null, name: null, address: null, notes: null });
+  });
+
+  it("refuses unknown statuses and oversized or missing fields", () => {
+    expect(parseLeadEdit(form({ status: "deleted" }))).toBeNull();
+    expect(parseLeadEdit(form({ name: "x".repeat(121) }))).toBeNull();
+    expect(parseLeadEdit(form({ address: "x".repeat(201) }))).toBeNull();
+    expect(parseLeadEdit(form({ notes: "x".repeat(4001) }))).toBeNull();
+    expect(parseLeadEdit(new FormData())).toBeNull();
+  });
+
+  it("shows the edit form with the current values", () => {
+    const html = renderToStaticMarkup(
+      <LeadDetail lead={lead({ name: "Pat", notes: "gate code 1" })} conversation={null} thread={[]} config={config} timezone="America/New_York" notice="saved" />,
+    );
+    expect(html).toContain('action="/dashboard/leads/10000000-0000-4000-8000-000000000001/update"');
+    expect(html).toContain('name="was_status" value="new"');
+    expect(html).toContain("Saved.");
+    expect(html).toContain("gate code 1");
+  });
+});
+
+describe("add-owner", () => {
+  const TENANT = "10000000-0000-4000-8000-0000000000aa";
+  function fake(state: { users?: Record<string, string>; members?: string[]; tenant?: string | null } = {}) {
+    const users = new Map(Object.entries(state.users ?? {}));
+    const members = new Set(state.members ?? []);
+    const calls: string[] = [];
+    const admin: OwnerAdmin = {
+      tenantName: async () => (state.tenant === undefined ? "Acme HVAC" : state.tenant),
+      findUserId: async (e) => users.get(e) ?? null,
+      createUser: async (e) => {
+        calls.push(`create:${e}`);
+        users.set(e, `user-${users.size + 1}`);
+        return users.get(e) as string;
+      },
+      addMember: async (_t, u) => {
+        calls.push(`member:${u}`);
+        if (members.has(u)) return "exists";
+        members.add(u);
+        return "added";
+      },
+    };
+    return { admin, calls };
+  }
+
+  it("parses arguments strictly", () => {
+    expect(parseAddOwnerArgs([TENANT, "Pat@Example.com"])).toEqual({ tenantId: TENANT, email: "pat@example.com", role: "owner", apply: false });
+    expect(parseAddOwnerArgs([TENANT, "pat@example.com", "staff", "--apply"])?.apply).toBe(true);
+    expect(parseAddOwnerArgs(["nope", "pat@example.com"])).toBeNull();
+    expect(parseAddOwnerArgs([TENANT, "not-an-email"])).toBeNull();
+    expect(parseAddOwnerArgs([TENANT, "pat@example.com", "admin"])).toBeNull();
+    expect(parseAddOwnerArgs([TENANT, "pat@example.com", "owner", "extra"])).toBeNull();
+  });
+
+  it("changes nothing without --apply", async () => {
+    const f = fake();
+    const r = await addOwner(f.admin, { tenantId: TENANT, email: "pat@example.com", role: "owner", apply: false });
+    expect(r).toMatchObject({ tenantName: "Acme HVAC", applied: false, userExists: false });
+    expect(f.calls).toEqual([]);
+  });
+
+  it("creates the login and membership with --apply, reusing an existing login", async () => {
+    const f = fake();
+    await addOwner(f.admin, { tenantId: TENANT, email: "pat@example.com", role: "owner", apply: true });
+    expect(f.calls).toEqual(["create:pat@example.com", "member:user-1"]);
+
+    const g = fake({ users: { "pat@example.com": "u9" } });
+    const r = await addOwner(g.admin, { tenantId: TENANT, email: "pat@example.com", role: "staff", apply: true });
+    expect(g.calls).toEqual(["member:u9"]);
+    expect(r).toMatchObject({ userExists: true, alreadyMember: false });
+  });
+
+  it("reports an existing membership and refuses an unknown business", async () => {
+    const f = fake({ users: { "pat@example.com": "u9" }, members: ["u9"] });
+    expect((await addOwner(f.admin, { tenantId: TENANT, email: "pat@example.com", role: "owner", apply: true })).alreadyMember).toBe(true);
+    const g = fake({ tenant: null });
+    await expect(addOwner(g.admin, { tenantId: TENANT, email: "pat@example.com", role: "owner", apply: true })).rejects.toThrow("No business");
+    expect(g.calls).toEqual([]);
   });
 });

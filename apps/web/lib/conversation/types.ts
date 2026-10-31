@@ -103,6 +103,8 @@ export interface ConversationStore {
   incrementAiReplies(conversationId: string): Promise<void>;
   setBooking(conversationId: string, booking: Partial<BookingState>): Promise<void>;
   updateLeadAddress(tenantId: string, leadId: string, address: string): Promise<void>;
+  // Lead status becomes "booked" unless the owner already moved it on.
+  markLeadBooked(tenantId: string, leadId: string): Promise<void>;
   // True if this conversation now holds the time; false if another
   // conversation of the tenant holds an overlapping one.
   claimEstimateSlot(tenantId: string, conversationId: string, start: Date, end: Date, bufferMinutes: number): Promise<boolean>;

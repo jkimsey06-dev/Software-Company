@@ -9,7 +9,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "calendar:link": "node scripts/calendar-link.ts"
+    "calendar:link": "node scripts/calendar-link.ts",
+    "owner:add": "node scripts/add-owner.ts"
   },
   "dependencies": {
     "@sc/ai": "workspace:*",

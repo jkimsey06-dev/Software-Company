@@ -186,6 +186,14 @@ export function createConversationStore(db: SupabaseClient): ConversationStore {
       );
     },
 
+    async markLeadBooked(tenantId, leadId) {
+      // Only new/contacted leads: never undo a "won", "lost" or "spam" the owner set.
+      data(
+        await db.from("leads").update({ status: "booked" }).eq("tenant_id", tenantId).eq("id", leadId).in("status", ["new", "contacted"]),
+        "mark lead booked",
+      );
+    },
+
     async claimEstimateSlot(tenantId, conversationId, start, end, bufferMinutes) {
       return data(
         await db.rpc("claim_estimate_slot", {

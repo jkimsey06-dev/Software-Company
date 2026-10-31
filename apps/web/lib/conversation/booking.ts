@@ -371,6 +371,9 @@ async function createAndConfirm(
     await deps.store
       .updateLeadAddress(tenantId, msg.leadId, address)
       .catch((err) => deps.log("booking.lead_address_failed", { tenantId, conversationId: conversation.id, error: errorLabel(err) }));
+    await deps.store
+      .markLeadBooked(tenantId, msg.leadId)
+      .catch((err) => deps.log("booking.lead_status_failed", { tenantId, conversationId: conversation.id, error: errorLabel(err) }));
   }
   return {
     action: "booked",

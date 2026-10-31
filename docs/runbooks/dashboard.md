@@ -45,7 +45,31 @@ In the Supabase dashboard, **Authentication**:
 - Dashboard pages are never cached or framed (`Cache-Control: no-store`,
   `X-Frame-Options: DENY`).
 
+## Adding an owner or staff member
+
+When a client signs, add their people (dev first; for staging or prod you run it
+yourself with that project's URL and service key):
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+  pnpm --filter @sc/web owner:add <tenant-id> <email> [owner|staff]
+```
+
+That is a dry run: it shows which Supabase project and which business it's talking
+to, and what it would do. Add `--apply` to do it. It creates the login if needed and
+adds the membership. **It sends no email.** Tell them to open `/login` on the app and
+ask for a link. Use the service key only on your own machine, never in the app's
+browser code or in chat.
+
+## Editing a lead
+
+On a lead's page the owner can change the status, name, address and notes (notes are
+private to the business). Saving a note never undoes a status the system set while the
+form was open: the status is only written if the owner changed it. When an estimate is
+booked the lead becomes **Booked** automatically, unless the owner already moved it to
+Won, Lost or Spam.
+
 ## What the owner can't do here (yet)
 
-Reply to customers, edit leads, or connect a calendar by themselves (we send a connect
-link, see `calendar.md`).
+Reply to customers, or connect a calendar by themselves (we send a connect link, see
+`calendar.md`).
