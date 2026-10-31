@@ -117,6 +117,27 @@ begin
 end;
 $$;
 
+-- An owner of N -----------------------------------------------------------------
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b8","role":"authenticated"}';
+
+do $$
+begin
+  if (select count(*) from public.leads) <> 1
+     or (select tenant_id from public.leads) <> '10000000-0000-0000-0000-0000000000b8'
+     or (select count(*) from public.tenants) <> 1
+     or (select name from public.tenants) <> 'Tenant N'
+     or (select count(*) from public.conversations) <> 1
+     or (select count(*) from public.calendar_connections) <> 1 then
+    raise exception 'FAIL: owner N should see only business N';
+  end if;
+  update public.leads set status = 'won' where id = '20000000-0000-0000-0000-0000000000a8';
+  if (select status from public.leads) = 'won' then
+    raise exception 'FAIL: owner N changed business M''s lead';
+  end if;
+  raise notice 'ok - an owner sees and edits only their own business';
+end;
+$$;
+
 -- A signed-in user who belongs to no business ----------------------------------
 set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000c8","role":"authenticated"}';
 

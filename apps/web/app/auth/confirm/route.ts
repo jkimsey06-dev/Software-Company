@@ -1,7 +1,13 @@
-import { parseTokenHash } from "../../../lib/dashboard/auth-routes";
+import { parseTokenHash, sameOrigin } from "../../../lib/dashboard/auth-routes";
 import { createDashboardClient } from "../../../lib/dashboard/server";
 
-const HEADERS = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" };
+const HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "cache-control": "no-store",
+  "referrer-policy": "no-referrer",
+  "x-frame-options": "DENY",
+  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+};
 
 function page(status: number, body: string): Response {
   return new Response(
@@ -24,6 +30,8 @@ export async function GET(request: Request): Promise<Response> {
 
 // POST /auth/confirm  Exchanges the token for a session (set as cookies).
 export async function POST(request: Request): Promise<Response> {
+  // Only the button on our own page: a forged form can't sign someone in as another user.
+  if (!sameOrigin(request)) return new Response("Forbidden", { status: 403 });
   const form = await request.formData();
   const raw = form.get("token_hash");
   const token = parseTokenHash(typeof raw === "string" ? raw : null);

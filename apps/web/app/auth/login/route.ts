@@ -10,8 +10,8 @@ export async function POST(request: Request): Promise<Response> {
   if (!email) return back("error=bad_email");
   const db = await createDashboardClient();
   if (!db) return back("error=not_configured");
-  const { error } = await db.auth.signInWithOtp({ email, options: { shouldCreateUser: false } });
-  // Rate limits are worth telling people about; everything else looks the same.
-  if (error?.status === 429) return back("error=slow_down");
+  // Same answer whatever happens (known address, unknown address, rate limit),
+  // so the form can't be used to find out who has an account.
+  await db.auth.signInWithOtp({ email, options: { shouldCreateUser: false } });
   return back("sent=1");
 }

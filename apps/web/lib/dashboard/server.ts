@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { cache } from "react";
 import { redirect } from "next/navigation";
+import { sessionCookieOptions } from "./cookies";
 import { readSupabasePublicEnv } from "./env";
 import { TENANT_COOKIE, pickTenant, type Membership } from "./tenant";
 
@@ -18,7 +19,7 @@ export async function createDashboardClient(): Promise<SupabaseClient | null> {
       setAll: (list) => {
         // Server components can't set cookies; proxy.ts refreshes the session.
         try {
-          for (const { name, value, options } of list) store.set(name, value, options);
+          for (const { name, value, options } of list) store.set(name, value, sessionCookieOptions(options));
         } catch {
           /* read-only context */
         }

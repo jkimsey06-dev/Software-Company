@@ -41,6 +41,7 @@ Steps are in `docs/runbooks/dashboard.md`. Do them on dev first, then staging an
 - [ ] Turn off public sign-ups in Supabase Auth.
 - [ ] Set the Site URL to the app's public URL.
 - [ ] Edit the Magic link email template to link to `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}`.
+- [ ] Add rate limiting in front of `/auth/login` (Vercel Firewall rule, for example). Supabase limits repeat emails to one address, but nothing limits requests per visitor.
 - [ ] Before real clients, send login emails through Resend's SMTP (Supabase's built-in sender is for testing).
 
 ## 4. Resend (email)

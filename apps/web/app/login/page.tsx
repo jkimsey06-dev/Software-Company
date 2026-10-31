@@ -4,7 +4,6 @@ export const metadata = { title: `Sign in · ${SITE.productName}`, robots: { ind
 
 const ERRORS: Record<string, string> = {
   bad_email: "That doesn't look like an email address.",
-  slow_down: "Please wait a minute before asking for another link.",
   link_expired: "That link has expired or was already used. Request a new one.",
   no_access: "That account isn't linked to a business yet. Ask us to add you.",
   not_configured: "Sign-in isn't set up yet.",

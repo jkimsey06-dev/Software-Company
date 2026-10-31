@@ -167,3 +167,12 @@ describe("lead detail", () => {
     expect(html).toContain("No texts yet");
   });
 });
+
+describe("session cookies", () => {
+  it("are HttpOnly, lax, and capped at 30 days", async () => {
+    const { sessionCookieOptions } = await import("./cookies");
+    const o = sessionCookieOptions({ httpOnly: false, maxAge: 400 * 24 * 3600, path: "/" });
+    expect(o).toMatchObject({ httpOnly: true, sameSite: "lax", maxAge: 30 * 24 * 3600, path: "/" });
+    expect(sessionCookieOptions(undefined).httpOnly).toBe(true);
+  });
+});
