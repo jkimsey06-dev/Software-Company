@@ -142,7 +142,7 @@ const REASONS: Record<string, string> = {
   booked_unconfirmed: "We booked their estimate but couldn't confirm it with them by text.",
 };
 
-function reasonLine(reason: string): string {
+export function reasonLine(reason: string): string {
   if (reason.startsWith("classifier_") || reason.startsWith("reply_")) {
     // reply_<reason> is the understanding step.
     return REASONS[reason] ?? "The assistant was unavailable, so we sent a holding message.";
